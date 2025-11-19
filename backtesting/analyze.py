@@ -28,7 +28,7 @@ def get_streak_stats(pnl_series):
         'avg_losing_streak': losing_streaks.mean() if len(losing_streaks) > 0 else 0
     }
 
-df = pd.read_csv('./data/qqq_5min.csv')
+df = pd.read_csv('./data/QQQ_5min.csv')
 df['date'] = pd.to_datetime(df['date'], utc=True).dt.tz_convert('America/New_York')
 # df = df[df['date'].dt.year >= 2022].reset_index(drop=True)
 

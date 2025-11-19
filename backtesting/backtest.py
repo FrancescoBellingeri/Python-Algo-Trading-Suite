@@ -1,6 +1,12 @@
 import pandas as pd
-from termcolor import colored as cl
-import datetime
+import pandas_ta as ta
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from ib_insync import *
+from datetime import datetime
+import time
+import os
 
 def ibkr_commission(shares):
     total_fees = shares * 0.005
@@ -8,15 +14,15 @@ def ibkr_commission(shares):
 
 def calculate_position_size(entry_price, stop_loss, account_size, risk_per_trade_pct, max_risk_dollars, leverage=4):
     """
-    Calcola il numero di contratti (o azioni) da acquistare tenendo conto di:
-    - rischio per trade in percentuale,
-    - leva finanziaria,
-    - perdita massima assoluta consentita in dollari.
+    Calculate the number of contracts (or shares) to buy, taking into account:
+    - risk per trade as a percentage,
+    - leverage,
+    - maximum allowed absolute loss in dollars.
     """
 
-    # Rischio per contratto
+    # Risk per contract
     R = abs(entry_price - stop_loss)
-    if R == 0 or R < 0.01:  # rischio minimo simbolico per evitare divisione per zero
+    if R == 0 or R < 0.01:  # minimal symbolic risk to avoid division by zero
         return 0
 
     risk_dollars = account_size * risk_per_trade_pct
@@ -27,80 +33,77 @@ def calculate_position_size(entry_price, stop_loss, account_size, risk_per_trade
 
     return position_size, R * position_size
 
-def implement_atr_strategy(df, investment, risk_per_trade_pct, atr_multiplier, max_risk_dollars):
-    in_position = False
+def run_backtest(df, investment, risk_per_trade_pct, atr_multiplier, max_risk_dollars):
     equity = investment
     trades = []
+    
+    in_position = False
     entry_price = 0
     entry_date = None
     no_of_shares = 0
     trailing_stop_price = 0
     dollar_risk = 0
+    entry_idx = 0
     fees = 0
 
-    print(cl(f"INIZIO BACKTEST con Capitale: ${investment}, Rischio/Trade: {risk_per_trade_pct*100}%, ATR Multiplier: {atr_multiplier}\n", attrs=['bold']))
-    
-    for i in range(1, len(df)): # Partiamo da 14 per assicurarci che l'ATR sia stabile
+    for i in range(1, len(df)):
         
-        # --- LOGICA DI USCITA ---
+        # --- EXIT LOGIC ---
         if in_position:
             exit_triggered = False
             exit_reason = ""
 
-            if df.low[i] <= trailing_stop_price:
+            if df['low'].iloc[i] <= trailing_stop_price:
                 exit_triggered = True
                 exit_reason = "TRAILING_STOP"
                 exit_price = trailing_stop_price
-            # if df['RSI_10'][i] > 70 and df['close'][i] < df['SMA_200'][i]:
-            #     exit_triggered = True
-            #     exit_reason = "RSI_SMA"
-            if df['WILLR_10'][i] > -20 and df['close'][i] < df['SMA_200'][i]:
+            if df['WILLR_10'].iloc[i] > -20 and df['close'].iloc[i] < df['SMA_200'].iloc[i]:
                 exit_triggered = True
                 exit_reason = "WILLR_SMA"
-                exit_price = df['close'][i]
-            # elif df.date[i].hour == 15 and df.date[i].minute == 59:
-            #     exit_triggered = True
-            #     exit_reason = "EOD"
+                exit_price = df['close'].iloc[i]
 
             if exit_triggered:
-                equity += (no_of_shares * df.close[i])
-                in_position = False
                 pnl = (exit_price - entry_price) * no_of_shares - fees
+                equity += (no_of_shares * exit_price) - fees
                 rr = pnl / dollar_risk
+                
                 trades.append({
                     "entry_date": entry_date,
+                    "exit_date": df["date"].iloc[i],
                     "entry_price": entry_price,
-                    "exit_date": df["date"][i],
-                    "exit_price": df['close'][i],
+                    "exit_price": exit_price,
                     "pnl": round(pnl, 2),
                     "R:R": rr,
                     "shares": no_of_shares,
-                    "equity_post_trade": equity,
-                    "is_winner": rr > 1,
-                    "atr_at_entry": df['ATR_14'][i],
-                    "sma200_at_entry": df['SMA_200'][i],
+                    "equity": equity,
+                    "atr_at_entry": df['ATR_14'].iloc[entry_idx-1],
+                    "sma200_at_entry": df['SMA_200'].iloc[entry_idx-1],
+                    "willr10_at_entry": df['WILLR_10'].iloc[entry_idx-1],
                     "exit_reason": exit_reason,
                     "fees": fees,
                 })
-                continue # Passa al ciclo successivo dopo aver chiuso la posizione
+                
+                in_position = False
+                no_of_shares = 0
+                continue # Skip to the next loop iteration after closing the position
 
-            # Calcola il potenziale nuovo stop e lo aggiorna solo se è più alto
-            potential_stop = round(df.close[i] - (df['ATR_14'][i] * atr_multiplier), 2)
+            # Calculate potential new stop and update only if higher
+            potential_stop = round(df['close'][i] - (df['ATR_14'].iloc[i] * atr_multiplier), 2)
             trailing_stop_price = max(trailing_stop_price, potential_stop)
-        # --- LOGICA DI ENTRATA ---
+        # --- ENTRY LOGIC ---
         if not in_position:
-            # ENTRATA LONG
-            # if df['RSI_10'][i] < 30 and df['close'][i] > df['SMA_200'][i]:
-            if df['WILLR_10'][i] < -80 and df['close'][i] > df['SMA_200'][i]:
-                entry_date = df['date'][i]
-                # --- CALCOLO POSITION SIZING BASATO SU ATR E RISCHIO ---
-                entry_price = df['open'][i+1]
+            if df['WILLR_10'].iloc[i] < -80 and df['close'].iloc[i] > df['SMA_200'].iloc[i]:
+                entry_date = df['date'].iloc[i]
+
+                entry_price = df['open'].iloc[i+1]
                 
-                atr_value = df['ATR_14'][i]
-                if atr_value <= 0: continue # Evita divisione per zero se l'ATR è nullo
+                atr_value = df['ATR_14'].iloc[i]
+                if atr_value <= 0: 
+                    continue # Avoid division by zero if ATR is zero
                 
+                # --- POSITION SIZING BASED ON ATR AND RISK ---
                 risk_per_share = atr_value * atr_multiplier
-                # Imposta lo stop loss iniziale
+                # Set initial stop loss
                 trailing_stop_price = round(entry_price - risk_per_share, 2)
 
                 no_of_shares, dollar_risk = calculate_position_size(
@@ -112,32 +115,64 @@ def implement_atr_strategy(df, investment, risk_per_trade_pct, atr_multiplier, m
                     leverage=4
                 )
 
-                fees = ibkr_commission(no_of_shares) * 2
+                if no_of_shares > 0:
+                    in_position = True
+                    fees = ibkr_commission(no_of_shares) * 2
+                    entry_idx = i + 1
                 
-                # Esecuzione del trade
+                # Execute trade
                 equity -= (no_of_shares * entry_price) 
                 
-                in_position = True
-                # print(cl('BUY:           ', color = 'green', attrs = ['bold']), f'{no_of_shares} Shares bought at ${entry_price} on {df.date[i]} (Initial SL: ${trailing_stop_price:.2f})')
 
-    # Chiusura posizione se ancora aperta alla fine
+    # Close position if still open at the end
     if in_position:
-        equity += (no_of_shares * df.close[i])
-        print(cl(f'\nClosing final position at {df.close[i]} on {df.date[i]}', attrs = ['bold']))
-
-    trades_df = pd.DataFrame(trades)
-    trades_df.to_csv('trades_log_5min.csv', index=False)
-    print(cl(f"\n✅ Salvati {len(trades)} trade in 'trades_log.csv'", color="cyan"))
+        equity += (no_of_shares * df['close'].iloc[i])
 
     earning = round(equity - investment, 2)
     roi = round(earning / investment * 100, 2)
-    print('')
-    print(cl(f'EARNING: ${earning} ; ROI: {roi}%', attrs = ['bold']))
 
-df = pd.read_csv('../data/QQQ_5min.csv')
+    print(f'EARNING: ${earning} ; ROI: {roi}%')
+    return pd.DataFrame(trades)
+   
+
+STARTING_CAPITAL = 100000
+
+df = pd.read_csv('data/QQQ_5min.csv')
 df['date'] = pd.to_datetime(df['date'], utc=True).dt.tz_convert('America/New_York')
-# df = df[df['date'].dt.year >= 2022].reset_index(drop=True)
-# QQQ ATR_MULTIPLIER 8 MAX_RISK_DOLLARS 15000
-# SPY ATR_MULTIPLIER 9 MAX_RISK_DOLLARS 15000
-# TSLA ATR_MULTIPLIER 9 MAX_RISK_DOLLARS 15000
-implement_atr_strategy(df, 100000, risk_per_trade_pct=0.02, atr_multiplier=10, max_risk_dollars=30000)
+
+# Execute backtest
+trades_df = run_backtest(df, STARTING_CAPITAL, risk_per_trade_pct=0.02, atr_multiplier=10, max_risk_dollars=30000)
+trades_df['exit_date'] = pd.to_datetime(trades_df['exit_date'], utc=True).dt.tz_convert('America/New_York')
+trades_df.to_csv('trades_log_5min.csv', index=False)
+print(f"\n✅ Salvati {len(trades_df)} trade in 'trades_log.csv'")
+
+# earning = round(equity - investment, 2)
+# roi = round(earning / investment * 100, 2)
+# print('')
+# print(cl(f'EARNING: ${earning} ; ROI: {roi}%', attrs = ['bold']))
+
+# Calculate data for buy and hold plots
+initial_price = df.iloc[0]['close']
+final_price = df.iloc[-1]['close']
+shares = STARTING_CAPITAL / initial_price
+    
+# Calcola l'equity curve del buy & hold
+buy_hold_df = pd.DataFrame({
+    'date': df['date'],
+    'equity': df['close'] * shares
+})
+
+# Create plot
+plt.figure(figsize=(20, 10))
+sns.set_style("whitegrid")
+
+plt.plot(trades_df['entry_date'], trades_df['equity'], 
+    color='blue', linewidth=1.5, label='Strategia')
+
+plt.plot(buy_hold_df['date'],  buy_hold_df['equity'],
+            color='green', linewidth=1.5, label='Buy & Hold')
+
+plt.axhline(y=STARTING_CAPITAL, color='r', linestyle='--', label='Capitale Iniziale')
+
+plt.title('Confronto Strategia vs Buy & Hold', fontsize=14, pad=20)
+plt.show()
