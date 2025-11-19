@@ -9,14 +9,17 @@ class IBConnector:
         self.ib = IB()
         self.connected = False
         
-    def connect(self):
+    async def connect(self):
         """Connette a TWS/IB Gateway."""
         try:
-            self.ib.connect(
+            await self.ib.connectAsync(
                 host=IB_HOST,
                 port=IB_PORT,
                 clientId=IB_CLIENT_ID
             )
+            
+            self.ib.sleep(1) 
+
             self.connected = True
             logger.info(f"Connesso a IB su {IB_HOST}:{IB_PORT}")
             return True

@@ -1,6 +1,5 @@
 import pandas as pd
-from datetime import datetime, time
-from ib_insync import Stock, MarketOrder, StopOrder, LimitOrder
+from ib_insync import Stock, MarketOrder, StopOrder
 from src.logger import logger
 from config import SYMBOL, EXCHANGE, CURRENCY, MAX_RISK_PER_TRADE
 
@@ -22,256 +21,242 @@ class ExecutionHandler:
         
         # Tracking
         self.current_position = None
-        self.active_orders = []
-        self.daily_range = None
+        self.current_stop_order = None
+        self.entry_price = None
+        self.stop_price = None
+        self.position_size = 0
+
+        self.atr_multiplier = 10
         
         logger.info(f"ExecutionHandler inizializzato - Capitale: ${capital:,.0f}")
     
-    def calculate_position_size(self, entry_price, stop_loss, risk_multiplier=1.0):
+    def calculate_position_size(self, entry_price, stop_loss, account_size, risk_per_trade_pct, leverage=4):
         """
-        Calcola la size della posizione basata sul rischio.
+        Calcola il numero di contratti (o azioni) da acquistare tenendo conto di:
+        - rischio per trade in percentuale,
+        - leva finanziaria,
+        - perdita massima assoluta consentita in dollari.
         """
-        # Rischio per share
-        risk_per_share = abs(entry_price - stop_loss)
-        
-        if risk_per_share < 0.01:
-            logger.warning("Rischio per share troppo basso")
+
+        # Rischio per contratto
+        R = abs(entry_price - stop_loss)
+        if R == 0 or R < 0.01:  # rischio minimo simbolico per evitare divisione per zero
             return 0
-        
-        # IMPORTANTE: Verifica che stop_loss sia ragionevole!
-        logger.info(f"Entry: ${entry_price:.2f}, Stop: ${stop_loss:.2f}, Risk/share: ${risk_per_share:.2f}")
-        
-        # Calcolo size basato sul rischio (es. 1% di $25k = $250)
-        risk_amount = self.capital * self.base_risk * risk_multiplier
-        shares = int(risk_amount / risk_per_share)
-        
-        # AGGIUNGI LIMITI DI SICUREZZA!
-        max_shares_by_capital = int(5000000 / entry_price)  # max 95% del capitale
-        
-        shares = min(shares, max_shares_by_capital)
-        
-        logger.info(f"Position sizing:")
-        logger.info(f"  Capitale: ${self.capital:,.0f}")
-        logger.info(f"  Risk amount: ${risk_amount:.0f}")
-        logger.info(f"  Risk/share: ${risk_per_share:.2f}")
-        logger.info(f"  Shares calcolate: {shares}")
-        logger.info(f"  Valore posizione: ${shares * entry_price:,.0f}")
-        
-        # CONTROLLO DI SICUREZZA
-        if shares * entry_price > 5000000:
-            logger.error(f"ERRORE: Posizione ${shares * entry_price:,.0f} > Capitale ${self.capital:,.0f}")
-            return 0
-        
-        return shares
+
+        risk_dollars = account_size * risk_per_trade_pct
+        risk_based_size = risk_dollars / R
+        leverage_based_size = (account_size * leverage) / entry_price
+        position_size = int(min(risk_based_size, leverage_based_size))
+
+        return position_size
     
-    def analyze_first_candle(self, first_candle):
+    def check_entry_signals(self, df):
         """
-        Analizza la prima candela 5 min per determinare Daily Range e direzione.
+        Esegue la strategia basata sull'ultima candela recuperata.
         
         Args:
-            first_candle: Dict con dati OHLCV della prima candela
-            
-        Returns:
-            dict con daily range e direzione
-        """
-        # Verifica candela Doji
-        if first_candle['open'] == first_candle['close']:
-            logger.warning("Prima candela è Doji - No trade")
-            return None
-        
-        # Determina direzione
-        candle_direction = 'bullish' if first_candle['close'] > first_candle['open'] else 'bearish'
-        
-        # Calcola Daily Range
-        self.daily_range = {
-            'high': first_candle['high'],
-            'low': first_candle['low'],
-            'size': first_candle['high'] - first_candle['low'],
-            'direction': candle_direction
-        }
-        
-        logger.info(f"Daily Range: High={self.daily_range['high']:.2f}, Low={self.daily_range['low']:.2f}")
-        logger.info(f"Prima candela: {candle_direction}")
-        
-        return self.daily_range
-    
-    def execute_strategy(self, second_candle, prediction, atr_value):
-        """
-        Esegue la strategia basata su candela, predizione e ATR.
-        
-        Args:
-            second_candle: Dict con dati della seconda candela 5 min
-            prediction: Predizione HMM ('BULL' o 'BEAR')
-            atr_value: Valore ATRr_14 per Mean Reversion
+            df: DataFrame con le informazioni per eseguire strategia
             
         Returns:
             bool: True se l'ordine è stato piazzato
         """
-        if not self.daily_range:
-            logger.error("Daily Range non calcolato")
-            return False
         
         if self.has_position():
             logger.warning("Posizione già aperta")
             return False
         
-        # Determina il tipo di trade
-        trade_type = None
-        entry_price = second_candle['open']
-        stop_loss = None
-        risk_multiplier = 1.0
-        
-        # LONG: candela bullish + stato BULL
-        if self.daily_range['direction'] == 'bullish' and prediction == 'BULL':
-            trade_type = 'LONG'
-            stop_loss = self.daily_range['low']
-            risk_multiplier = 1.0
+        last_candle = df.iloc[-1]
+        if last_candle['WILLR_10'] < -80 and last_candle['close'] > last_candle['SMA_200']:
+            entry_price = last_candle['close']
             
-        # SHORT: candela bearish + stato BEAR
-        elif self.daily_range['direction'] == 'bearish' and prediction == 'BEAR':
-            trade_type = 'SHORT'
-            stop_loss = self.daily_range['high']
-            risk_multiplier = 1.0
+            atr_value = last_candle['ATR_14']
+
+            if atr_value <= 0:
+                logger.error("ATR < 0, impossibile eseguire il trade")
+                return False
+            
+            risk_per_share = atr_value * self.atr_multiplier
+            # Imposta lo stop loss iniziale
+            trailing_stop_price = round(entry_price - risk_per_share, 2)
         
-        else:
-            logger.info("Nessun setup valido per oggi")
-            return False
+            shares = self.calculate_position_size(
+                    entry_price=entry_price,
+                    stop_loss=trailing_stop_price,
+                    account_size=self.capital,
+                    risk_per_trade_pct=self.base_risk,
+                    leverage=4
+                )
         
-        # Calcola position size
-        shares = self.calculate_position_size(entry_price, stop_loss, risk_multiplier)
-        
-        if shares <= 0:
-            logger.warning("Position size = 0, nessun trade")
-            return False
-        
-        # Piazza l'ordine
-        return self._place_order(trade_type, entry_price, stop_loss, shares)
+            if shares <= 0:
+                logger.warning("Position size = 0, nessun trade")
+                return False
+
+            # Piazza l'ordine
+            return self.open_long_position(shares, trailing_stop_price)
+
+        return False
     
-    def _place_order(self, trade_type, entry_price, stop_loss, shares):
+    def check_exit_signals(self, df):
         """
-        Piazza l'ordine con stop loss e take profit.
+        Controlla se ci sono le condizioni per chiudere il trade.
         
         Args:
-            trade_type: 'LONG', 'SHORT'
-            entry_price: Prezzo di ingresso
-            stop_loss: Prezzo di stop loss
-            shares: Numero di azioni
+            df: DataFrame con le informazioni per eseguire strategia
             
         Returns:
-            bool: True se successo
+            bool: True se il trade è stato chiuso 
+        """
+        
+        if not self.has_position():
+            logger.warning("Non ci sono posizioni aperte")
+            return False
+        
+        last_candle = df.iloc[-1]
+        if last_candle['WILLR_10'] > -20 and last_candle['close'] < last_candle['SMA_200']:
+            return self.close_position()
+
+        return False
+    
+    def open_long_position(self, shares, stop_price):
+        """
+        Apre una posizione long usando un BRACKET ORDER (Parent + Child).
         """
         try:
-            # Calcola take profit (10R)
-            risk_per_share = abs(entry_price - stop_loss)
+            logger.info(f"📈 Invio Bracket Order: Buy {shares} @ MKT, Stop @ {stop_price}")
+
+            # 1. Ordine Genitore (Entry)
+            parent = MarketOrder('BUY', shares)
+            parent.transmit = False # <--- NON INVIARE ANCORA!
             
-            if trade_type == 'LONG':
-                action = 'BUY'
-                take_profit = entry_price + (10 * risk_per_share)
-                sl_action = 'SELL'
-            else:  # SHORT
-                action = 'SELL'
-                take_profit = entry_price - (10 * risk_per_share)
-                sl_action = 'BUY'
+            # 2. Ordine Figlio (Stop Loss)
+            stop_loss = StopOrder('SELL', shares, stop_price)
+            stop_loss.transmit = True # <--- Questo invierà tutto il pacchetto
             
-            logger.info(f"Piazzamento ordine {trade_type}:")
-            logger.info(f"- Entry: ${entry_price:.2f}")
-            logger.info(f"- Stop Loss: ${stop_loss:.2f}")
-            logger.info(f"- Take Profit: ${take_profit:.2f} (10R)")
-            logger.info(f"- Shares: {shares}")
+            parent_trade = self.ib.placeOrder(parent)
+            stop_loss.parentId = parent.orderId
+            stop_trade = self.ib.placeOrder(stop_loss)
             
-            # Ordine di ingresso (market order alla seconda candela)
-            entry_order = MarketOrder(action, shares)
-            entry_order.orderRef = f'{trade_type}_{datetime.now().strftime("%Y%m%d_%H%M%S")}'
+            logger.info(f"Ordini inviati. Parent ID: {parent.orderId}, Stop ParentId: {stop_loss.parentId}")
+
+            # 5. Attendiamo conferma del FILL del genitore
+            self.ib.waitOnUpdate(parent_trade, timeout=10)
             
-            # Piazza l'ordine di ingresso
-            entry_trade = self.ib.placeOrder(self.contract, entry_order)
-            self.active_orders.append(entry_trade)
+            if parent_trade.orderStatus.status == 'Filled':
+                fill_price = parent_trade.orderStatus.avgFillPrice
+                self.entry_price = fill_price
+                self.position_size = shares
+                
+                # Salviamo il riferimento all'ordine stop (che è già attivo sul server!)
+                self.current_stop_order = stop_loss
+                self.stop_price = stop_price
+                self.current_position = parent_trade
+                
+                logger.info(f"✅ Bracket Eseguito. Entry: {fill_price}, Stop Attivo: {stop_price}")
+                return True
+            else:
+                logger.warning(f"Ordine Entry non immediato: {parent_trade.orderStatus.status}")
+                # In un bracket, se l'entry non è fillata, lo stop non si attiva. 
+                # Possiamo lasciare correre o cancellare.
+                return False
+
+        except Exception as e:
+            logger.error(f"Errore Bracket Order: {e}")
+            return False
+
+    def update_trailing_stop(self, df):
+        """
+        Aggiorna lo stop loss (trailing stop manuale).
+        
+        Args:
+            new_stop_price: Nuovo prezzo di stop
             
-            # Prepara SL e TP
-            stop_loss_order = StopOrder(sl_action, shares, stop_loss)
-            stop_loss_order.orderRef = f'SL_{datetime.now().strftime("%Y%m%d_%H%M%S")}'
+        Returns:
+            bool: True se aggiornato con successo
+        """
+        try:
+            if not self.has_position():
+                logger.warning("Nessuna posizione aperta")
+                return False
             
-            take_profit_order = LimitOrder(sl_action, shares, take_profit)
-            take_profit_order.orderRef = f'TP_{datetime.now().strftime("%Y%m%d_%H%M%S")}'
+            if not self.current_stop_order:
+                logger.warning("Posizione aperta ma nessun ordine Stop Loss tracciato in memoria.")
+                self.sync_position_state()
+                return False
             
-            # Callback per quando l'entry viene riempito
-            entry_trade.fillEvent += lambda trade, fill: self._on_entry_filled(
-                trade, fill, stop_loss_order, take_profit_order, trade_type
-            )
+            last_candle = df.iloc[-1]
+            atr_value = last_candle['ATR_14']
+
+            if atr_value <= 0:
+                logger.error("ATR < 0, impossibile aggiornare lo stop loss")
+                return False
             
-            logger.info(f"Ordine {trade_type} piazzato - ID: {entry_trade.order.orderId}")
+            risk_per_share = atr_value * self.atr_multiplier
+            # Imposta lo stop loss iniziale
+            new_stop_price = round(last_candle['close'] - risk_per_share, 2)
+            
+            if new_stop_price <= self.stop_price:
+                logger.debug(f"Nuovo stop ${new_stop_price:.2f} non migliore dell'attuale ${self.stop_price:.2f}")
+                return False
+            
+            self.current_stop_order.auxPrice = new_stop_price
+        
+            # Riapplicare l'ordine aggiorna quello esistente
+            trade = self.ib.placeOrder(self.contract, self.current_stop_order)
+            
+            # Aggiorna i riferimenti
+            old_stop = self.stop_price
+            self.stop_price = new_stop_price
+            
+            logger.info(f"📈 Stop Loss aggiornato: ${old_stop:.2f} → ${new_stop_price:.2f}")
+            
             return True
             
         except Exception as e:
-            logger.error(f"Errore nel piazzamento ordine: {e}")
+            logger.error(f"Errore nell'aggiornamento dello stop loss: {e}")
             return False
-    
-    def _on_entry_filled(self, entry_trade, fill, stop_loss_order, take_profit_order, trade_type):
-        """
-        Callback quando l'ordine di ingresso viene eseguito.
-        """
-        logger.info(f"Entry filled! Type: {trade_type}, Price: {fill.avgPrice}, Shares: {fill.shares}")
         
-        # Aggiorna tracking
-        self.current_position = {
-            'type': trade_type,
-            'shares': fill.execution.shares,
-            'entry_price': fill.execution.avgPrice,
-            'entry_time': datetime.now()
-        }
-        
-        # Piazza SL e TP come bracket order
-        sl_trade = self.ib.placeOrder(self.contract, stop_loss_order)
-        tp_trade = self.ib.placeOrder(self.contract, take_profit_order)
-        
-        self.active_orders.extend([sl_trade, tp_trade])
-        
-        # OCA (One-Cancels-All) per SL e TP
-        self.ib.oneCancelsAll([sl_trade.order, tp_trade.order], "OCA_" + datetime.now().strftime("%Y%m%d_%H%M%S"))
-        
-        logger.info("Stop Loss e Take Profit piazzati con OCA")
-    
-    def close_all_positions(self):
-        """Chiude tutte le posizioni a fine giornata."""
+    def close_position(self):
+        """Chiude la posizione corrente al mercato."""
         try:
-            positions = self.ib.positions()
+            if not self.has_position():
+                logger.warning("Nessuna posizione da chiudere")
+                return False
             
-            for position in positions:
-                if position.contract.symbol == SYMBOL and position.position != 0:
-                    shares = abs(position.position)
-                    action = 'SELL' if position.position > 0 else 'BUY'
-                    
-                    logger.info(f"EOD Close: {action} {shares} {SYMBOL}")
-                    
-                    order = MarketOrder(action, shares)
-                    order.orderRef = f'EOD_{datetime.now().strftime("%Y%m%d_%H%M%S")}'
-                    
-                    trade = self.ib.placeOrder(position.contract, order)
-                    logger.info(f"Ordine EOD inviato - ID: {trade.order.orderId}")
+            # Cancella lo stop loss
+            if self.current_stop_order:
+                self.ib.cancelOrder(self.current_stop_order)
             
-            # Cancella ordini pendenti
-            self.cancel_all_orders()
+            # Piazza ordine market di chiusura
+            close_order = MarketOrder('SELL', self.position_size)
+            trade = self.ib.placeOrder(self.contract, close_order)
             
-            # Reset
-            self.current_position = None
-            self.daily_range = None
+            # Aspetta esecuzione
+            self.ib.waitOnUpdate(trade, timeout=10)
+            
+            if trade.orderStatus.status == 'Filled':
+                exit_price = trade.orderStatus.avgFillPrice
+                pnl = (exit_price - self.entry_price) * self.position_size
+                
+                logger.info(f"✅ Posizione chiusa @ ${exit_price:.2f}")
+                logger.info(f"💰 P&L: ${pnl:.2f} ({pnl/self.capital*100:.2f}%)")
+                
+                # Reset tracking
+                self.current_position = None
+                self.current_stop_order = None
+                self.entry_price = None
+                self.stop_price = None
+                self.position_size = 0
+                
+                return True
+            
+            logger.error(f"Chiusura fallita: {trade.orderStatus.status}")
+
+            return False
             
         except Exception as e:
-            logger.error(f"Errore nella chiusura EOD: {e}")
-    
-    def cancel_all_orders(self):
-        """Cancella tutti gli ordini pendenti."""
-        try:
-            open_orders = self.ib.openOrders()
-            
-            for order in open_orders:
-                if order.orderRef and any(x in order.orderRef for x in ['LONG', 'SHORT', 'MEAN_REVERSION', 'SL', 'TP']):
-                    self.ib.cancelOrder(order)
-                    logger.info(f"Ordine cancellato: {order.orderRef}")
-                    
-        except Exception as e:
-            logger.error(f"Errore nella cancellazione ordini: {e}")
-    
+            logger.error(f"Errore nella chiusura posizione: {e}")
+            return False
+        
     def has_position(self):
         """Verifica se abbiamo una posizione aperta."""
         positions = self.ib.positions()
@@ -345,3 +330,53 @@ class ExecutionHandler:
         except Exception as e:
             logger.error(f"Errore durante l'aggiornamento del capitale: {e}")
             return False
+        
+    def sync_position_state(self):
+        """
+        Sincronizza lo stato locale con quello di IB all'avvio.
+        """
+        try:
+            logger.info("🔄 Sincronizzazione stato posizioni...")
+            
+            # 1. Trova posizione
+            positions = self.ib.positions()
+            target_pos = None
+            for p in positions:
+                if p.contract.symbol == SYMBOL and p.position > 0:
+                    target_pos = p
+                    break
+            
+            if not target_pos:
+                logger.info("Nessuna posizione aperta su IB.")
+                self.current_position = None
+                self.position_size = 0
+                return None
+            
+            # 2. Aggiorna stato
+            self.position_size = target_pos.position
+            self.entry_price = target_pos.avgCost
+            logger.info(f"Trovata posizione: {self.position_size} shares @ avg ${self.entry_price:.2f}")
+            
+            # 3. Trova stop order attivo
+            # ib.openOrders() ritorna tutti gli ordini aperti
+            orders = self.ib.openOrders()
+            found_stop = False
+            for o in orders:
+                if (o.contract.symbol == SYMBOL and 
+                    o.orderType in ['STP', 'TRAIL'] and 
+                    o.action == 'SELL'):
+                    
+                    self.current_stop_order = o
+                    self.stop_price = o.auxPrice
+                    logger.info(f"Trovato Stop Loss attivo: ID {o.orderId} @ ${o.auxPrice}")
+                    found_stop = True
+                    break
+            
+            if not found_stop:
+                logger.warning("⚠️ ATTENZIONE: Posizione aperta SENZA Stop Loss rilevato!")
+            
+            return {'shares': self.position_size}
+            
+        except Exception as e:
+            logger.error(f"Errore sync: {e}")
+            return None

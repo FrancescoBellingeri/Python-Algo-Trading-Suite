@@ -2,6 +2,7 @@ import pandas as pd
 import pandas_ta as ta
 import os
 from src.logger import logger
+from src.database import DatabaseHandler
 from config import SYMBOL
 
 class IndicatorCalculator:
@@ -9,6 +10,9 @@ class IndicatorCalculator:
     
     def __init__(self):
         """Inizializza il calcolatore di indicatori."""
+        self.db = DatabaseHandler()
+        self.symbol = SYMBOL
+
         # Parametri degli indicatori
         self.params = {
             'ATR_LENGTH': 14,
@@ -24,7 +28,7 @@ class IndicatorCalculator:
         if not os.path.exists(self.data_dir):
             os.makedirs(self.data_dir)
         
-        self.data_file = os.path.join(self.data_dir, f'{SYMBOL}_5min.csv')
+        self.data_file = os.path.join(self.data_dir, f'{self.symbol}_5min.csv')
             
     def calculate_all(self, df, timezone='America/New_York'):
         """
@@ -59,12 +63,8 @@ class IndicatorCalculator:
             # Calcola Williams %R
             df['WILLR_10'] = ta.willr(df['high'], df['low'], df['close'], length=self.params['WILLR_LENGTH'])
             
-            # Log informazioni sugli indicatori calcolati
-            valid_rows = df[['ATR_14', 'SMA_200', 'WILLR_10']].notna().all(axis=1).sum()
-            logger.info(f"Indicatori calcolati. Righe valide (con tutti gli indicatori): {valid_rows}/{len(df)}")
-            
             df.to_csv(self.data_file, index=False)
-
+            self.db.save_candles(df, self.symbol)
             return df
             
         except Exception as e:
@@ -82,6 +82,7 @@ class IndicatorCalculator:
             DataFrame con indicatori aggiornati
         """
         try:
+            return self.calculate_all(df)
             df = df.copy()
             
             # Identifica se gli indicatori esistono già

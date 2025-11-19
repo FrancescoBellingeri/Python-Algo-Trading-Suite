@@ -1,7 +1,8 @@
 from datetime import datetime, time
 from zoneinfo import ZoneInfo
-import schedule
 import pandas as pd
+import asyncio
+import ib_insync
 from src.ib_connector import IBConnector
 from src.data_handler import DataHandler
 from src.indicator_calculator import IndicatorCalculator
@@ -25,12 +26,12 @@ class TradingBot:
         
         logger.info("Trading Bot inizializzato")
     
-    def initialize_components(self):
+    async def initialize_components(self):
         """Inizializza tutti i componenti del sistema."""
         try:
             # Connetti a IB
             self.connector = IBConnector()
-            if not self.connector.connect():
+            if not await self.connector.connect():
                 raise Exception("Impossibile connettersi a IB")
             
             # Inizializza i moduli
@@ -41,6 +42,14 @@ class TradingBot:
             if not self.execution.update_capital():
                 logger.error("Fallito l'aggiornamento del capitale. Il bot si ferma per sicurezza.")
                 return False
+            
+            position_info = self.execution.sync_position_state()
+            if position_info:
+                self.in_position = True
+                logger.warning(f"⚠️ Bot avviato con posizione aperta di {position_info['shares']} shares")
+            else:
+                self.in_position = False
+                logger.info("✅ Bot avviato senza posizioni aperte")
             
             logger.info("Tutti i componenti inizializzati con successo")
             return True
@@ -80,7 +89,7 @@ class TradingBot:
         """
         try:
             # Metodo 1: Posizioni attuali
-            positions = self.ib.positions()
+            positions = self.connector.ib.positions()
             
             logger.info(f"Trovate {len(positions)} posizioni aperte")
 
@@ -100,17 +109,6 @@ class TradingBot:
         logger.info("=" * 50)
         
         try:
-            # Assicurati che il monitor sia fermato
-            self.stop_candle_monitor()
-            
-            # 1. Chiudi tutte le posizioni
-            logger.info("1. Chiusura posizioni aperte...")
-            self.execution.close_all_positions()
-            
-            # 2. Reset stato
-            self.today_prediction = None
-            self.today_traded = False
-            self.candle_processed = False
             
             logger.info("Fine giornata completata")
             
@@ -131,7 +129,7 @@ class TradingBot:
             logger.info(f"[{current_time.strftime('%H:%M:%S')}] Processando nuova candela 5 minuti...")
             
             # 1. Aggiorna dati
-            df = self.data_handler.update_data()
+            df = self.data_handler.update_data(max_retries=10, retry_delay=0.2)
             if df is None or df.empty:
                 logger.error("Errore nell'aggiornamento dati")
                 return
@@ -141,81 +139,63 @@ class TradingBot:
             
             # 4. Check segnali (se non siamo già in posizione)
             # if not self.in_position:
-            #     self.check_entry_signals(df)
+            #     if self.execution.check_entry_signals(df):
+            #         self.in_position = True
             # else:
-            #     self.check_exit_signals(df)
-            #     self.update_trailing_stop(df)
+            #     if self.execution.check_exit_signals(df):
+            #         logger.info("Trade chiuso perchè non rispettava più le condizioni")
+            #         self.in_position = False
+
+            #     self.execution.update_trailing_stop(df)
             
         except Exception as e:
             logger.error(f"Errore in on_new_candle: {e}")
 
-    def setup_schedules(self):
-        """Configura tutti gli schedule."""
-        ny_tz = ZoneInfo("America/New_York")
-        
-        # Orari target in orario di New York
-        target_times_ny = [
-            time(9, 28),    # 09:28:00 NY leggermente prima dell'apertura
-            time(15, 58)     # 15:58:00 NY leggermente prima della chiusura
-        ]
-
-        # Convertili nell'orario locale del server
-        target_times_local = []
-        for t in target_times_ny:
-            ny_dt = datetime.combine(datetime.now(ny_tz).date(), t, ny_tz)
-            local_dt = ny_dt.astimezone()  # converte in timezone locale del server
-            target_times_local.append(local_dt.time())
-
-        # Ora puoi schedulare i job con gli orari *locali equivalenti*
-        schedule.every().day.at(target_times_local[0].strftime("%H:%M:%S")).do(self.pre_market_routine)
-        schedule.every().day.at(target_times_local[1].strftime("%H:%M:%S")).do(self.end_of_day_routine)
-        
-        # Schedule per candele ogni 5 minuti durante il trading
-        # Parte da 9:35 e continua ogni 5 minuti fino a 15:55
-        for hour in range(9, 16):  # 9-15
-            for minute in [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55]:
-                # Skip prima delle 9:35 e dopo le 15:55
-                if hour == 9 and minute < 35:
-                    continue
-                if hour == 15 and minute > 55:
-                    continue
-                    
-                # Crea time in NY timezone e converti in locale
-                ny_time = time(hour, minute)
-                ny_dt = datetime.combine(datetime.now(ny_tz).date(), ny_time, ny_tz)
-                local_dt = ny_dt.astimezone()
-                local_time_str = local_dt.strftime("%H:%M:%S")
-                schedule.every().day.at(local_time_str).do(self.on_new_candle)
-        
-        logger.info("Schedule configurati:")
-        logger.info("- 09:30: Pre-market routine")
-        logger.info("- 09:35-15:55: Check candele ogni 5 minuti")
-        logger.info("- 16:00: End of day routine")
-
-    def run(self):
-        """Loop principale del bot."""
+    async def run(self):
+        """Loop principale asincrono."""
         logger.info("Trading Bot avviato")
         
-        # Inizializza componenti
-        if not self.initialize_components():
-            logger.error("Inizializzazione fallita")
+        if not await self.initialize_components():
             return
         
-        # Impostiamo gli schedule
-        self.setup_schedules()
+        # Definizione orari target (New York Time)
+        ny_tz = ZoneInfo("America/New_York")
         
-        # Loop principale
-        try:
-            while self.is_running:
-                schedule.run_pending()
-                self.connector.ib.sleep(1)  # usa ib.sleep per mantenere attive le callback
+        logger.info("⏳ In attesa di trigger orari...")
+
+        while self.is_running:
+            try:
+                # 1. Ottieni ora attuale NY
+                now = datetime.now(ny_tz)
                 
-        except KeyboardInterrupt:
-            logger.info("Bot interrotto dall'utente")
-        except Exception as e:
-            logger.error(f"Errore nel loop principale: {e}")
-        finally:
-            self.shutdown()
+                # 2. Controllo SECONDO 00 (Scatta all'inizio del minuto)
+                if now.second == 0:
+                    
+                    # A) Routine Pre-Market (09:30)
+                    if now.hour == 7 and now.minute == 20:
+                        self.pre_market_routine()
+                        await asyncio.sleep(2)
+
+                    # B) Routine EOD (16:00)
+                    elif now.hour == 16 and now.minute == 0:
+                        self.end_of_day_routine()
+                        await asyncio.sleep(2)
+
+                    # C) Candele 5 Minuti (9:35 -> 15:55, ogni 5 min)
+                    elif (time(9, 35) <= now.time() <= time(15, 55)):
+                        # Verifica modulo 5 minuti (0, 5, 10, ...)
+                        if now.minute % 5 == 0:
+                            self.on_new_candle()
+                            await asyncio.sleep(2)
+
+                # 3. Permette a IBKR di fare tutto quello che deve fare per 1 secondo
+                await asyncio.sleep(1) 
+                
+            except KeyboardInterrupt:
+                self.is_running = False
+            except Exception as e:
+                logger.error(f"Errore nel loop: {e}")
+                await asyncio.sleep(5)
     
     def shutdown(self):
         """Chiude il bot in modo pulito."""
@@ -233,5 +213,11 @@ class TradingBot:
         logger.info("Bot terminato")
 
 if __name__ == "__main__":
+    # Serve a ib_insync per convivere con il loop di asyncio.run()
+    ib_insync.util.patchAsyncio()
     bot = TradingBot()
-    bot.run()
+    try:
+        # Avvia il loop asincrono
+        asyncio.run(bot.run())
+    except KeyboardInterrupt:
+        bot.shutdown()

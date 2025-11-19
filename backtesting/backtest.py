@@ -56,7 +56,7 @@ def implement_atr_strategy(df, investment, risk_per_trade_pct, atr_multiplier, m
             if df['WILLR_10'][i] > -20 and df['close'][i] < df['SMA_200'][i]:
                 exit_triggered = True
                 exit_reason = "WILLR_SMA"
-                exit_price = trailing_stop_price
+                exit_price = df['close'][i]
             # elif df.date[i].hour == 15 and df.date[i].minute == 59:
             #     exit_triggered = True
             #     exit_reason = "EOD"
@@ -93,7 +93,7 @@ def implement_atr_strategy(df, investment, risk_per_trade_pct, atr_multiplier, m
             if df['WILLR_10'][i] < -80 and df['close'][i] > df['SMA_200'][i]:
                 entry_date = df['date'][i]
                 # --- CALCOLO POSITION SIZING BASATO SU ATR E RISCHIO ---
-                entry_price = df.close[i]
+                entry_price = df['open'][i+1]
                 
                 atr_value = df['ATR_14'][i]
                 if atr_value <= 0: continue # Evita divisione per zero se l'ATR è nullo
