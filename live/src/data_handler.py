@@ -5,6 +5,8 @@ from src.logger import logger
 from config import SYMBOL, EXCHANGE, CURRENCY
 from src.database import DatabaseHandler
 import time
+from datetime import datetime, timedelta
+import pytz
 
 class DataHandler:
     """Gestisce il download e l'aggiornamento dei dati di mercato."""
@@ -41,7 +43,7 @@ class DataHandler:
                 durationStr='5 D',
                 barSizeSetting='5 mins',
                 whatToShow='TRADES',
-                useRTH=False,
+                useRTH=True,
                 formatDate=1
             )
             
@@ -84,66 +86,84 @@ class DataHandler:
             # df = pd.read_csv(self.data_file)
             # df['date'] = pd.to_datetime(df['date'], utc=True).dt.tz_convert('America/New_York')
             
-            # 1. Chiediamo al DB qual è l'ultima candela che ha
-            df = self.db.get_latest_data(self.symbol, limit=1)
+            # --- STEP 1: Calcoliamo quale DOVREBBE essere l'ultima candela ---
+            ny_tz = pytz.timezone('America/New_York')
+            now = datetime.now(ny_tz)
+
+            # Arrotondiamo "adesso" ai 5 minuti precedenti
+            # Es. 10:03:45 -> 10:00:00
+            current_interval = now.replace(second=0, microsecond=0) 
+            current_interval = current_interval - timedelta(minutes=now.minute % 5)
+
+            # L'ultima candela CHIUSA è quella finita 5 minuti fa
+            # Es. Se siamo nell'intervallo delle 10:00, l'ultima candela completa è quella delle 09:55
+            expected_candle_time = current_interval - timedelta(minutes=5)
             
-            if df.empty:
+            # 1. Use limit=1 to fetch only the last candle
+            df_last = self.db.get_latest_data(self.symbol, limit=1)
+            
+            if df_last.empty:
                 logger.warning("DB vuoto. Eseguo download completo...")
                 return self.download_historical_data()
             
-            # Trova l'ultimo timestamp nei dati
-            last_timestamp = df['date'].max()
-            expected_timestamp = last_timestamp + pd.Timedelta(minutes=5)
+            # Get last date (NY time)
+            last_db_time = df_last['date'].iloc[-1]
 
-            logger.info(f"Ultimo timestamp nel dataset: {last_timestamp}")
+            logger.info(f"Ultimo timestamp nel dataset: {last_db_time}")
+
+            # --- STEP 3: Confronto ---
+            # Se l'ultima candela nel DB è uguale (o successiva) a quella attesa, siamo a posto.
+            if last_db_time >= expected_candle_time:
+                logger.info(f"Dati aggiornati. (Ultima: {last_db_time})")
+                return self.db.get_latest_data(self.symbol, limit=300)
             
-            # Scarica le ultime candele (ultimi 30 minuti per sicurezza)
-            # Questo garantisce di catturare anche eventuali candele mancate
-            logger.info(f"Scaricando ultime candele da 5 minuti...")
+            # Se siamo qui, MANCANO dei dati.
+            # Calcoliamo il "buco" per decidere quanto scaricare
+            gap = expected_candle_time - last_db_time
             
+            logger.info(f"Manca la candela {expected_candle_time}. Gap temporale: {gap}")
+            
+             # --- STEP 4: Strategia di Download Intelligente ---
+        
+            if gap < timedelta(minutes=10):
+                # Manca solo l'ultima candela (o poco più). Scarico veloce.
+                duration_str = '1800 S' # 30 min
+            elif gap < timedelta(days=2):
+                # Cambio giorno (es. ieri sera -> oggi mattina)
+                duration_str = '2 D'
+            else:
+                # Weekend o bot spento da giorni
+                duration_str = '1 W'
+            
+            # --- STEP 5: Scarico da IB ---
+            logger.info(f"Richiedo dati a IB (Duration: {duration_str})...")
+
             for attempt in range(max_retries):
                 bars = self.ib.reqHistoricalData(
                     self.contract,
                     endDateTime='',
-                    durationStr='1800 S',
+                    durationStr=duration_str,
                     barSizeSetting='5 mins',
                     whatToShow='TRADES',
-                    useRTH=False,
+                    useRTH=True,
                     formatDate=1
                 )
 
                 if bars:
                     # Converti e filtra solo i nuovi giorni
                     new_df = util.df(bars)
-                    new_df['date'] = pd.to_datetime(df['date'], utc=True).dt.tz_convert('America/New_York')
-                    new_candele = new_df[new_df['date'] >= expected_timestamp]
+                    new_df['date'] = pd.to_datetime(new_df['date'], utc=True).dt.tz_convert('America/New_York')
+                    
+                    # Filtro: Salvo solo ciò che è NUOVO rispetto al DB
+                    new_candle = new_df[new_df['date'] > last_db_time]
         
-                    if not new_candele.empty:
-                        # Trovata! Aggiungi solo candele nuove
-                        candele_da_aggiungere = new_candele[new_candele['date'] > last_timestamp]
+                    if not new_candle.empty:
+                        self.db.save_candles(new_candle, self.symbol)
 
-                        if not candele_da_aggiungere.empty:
-                            # df = pd.concat([df, candele_da_aggiungere], ignore_index=True)
-                            # df = df.drop_duplicates(subset=['date'], keep='last')
-                            # df = df.sort_values('date').reset_index(drop=True)
-                            
-                            # # Mantieni solo ultime 300 candele
-                            # if len(df) > 300:
-                            #     df = df.tail(300).reset_index(drop=True)
-                            
-                            # # Salva
-                            # df.to_csv(self.data_file, index=False)
-                            
-                            # logger.info(f"✅ Aggiunte {len(candele_da_aggiungere)} candele (attempt {attempt+1}/{max_retries})")
-                            
-                            # return df
-                            # 4. Salviamo le nuove nel DB
-                            self.db.save_candles(candele_da_aggiungere, self.symbol)
-                            
-                            logger.info(f"✅ Sync completato: aggiunte {len(candele_da_aggiungere)} nuove candele.")
-                            
-                            # 5. Restituiamo al bot le ultime 300 candele dal DB (per il calcolo indicatori)
-                            return self.db.get_latest_data(self.symbol, limit=300)
+                        logger.info(f"✅ Aggiunte {len(new_candle)} nuove candele.")
+                        
+                        # 5. Restituiamo al bot le ultime 300 candele dal DB (per il calcolo indicatori)
+                        return self.db.get_latest_data(self.symbol, limit=300)
 
                 # Retry
                 if attempt < max_retries - 1:
@@ -151,8 +171,8 @@ class DataHandler:
                     time.sleep(retry_delay)
 
             # Fallback: se dopo tutti i retry non abbiamo la candela attesa
-            logger.warning(f"⚠️ Candela {expected_timestamp} non trovata dopo {max_retries} tentativi")
-            return df
+            logger.warning(f"⚠️ Candela {expected_candle_time} non trovata dopo {max_retries} tentativi")
+            return pd.DataFrame()
         except Exception as e:
             logger.error(f"Errore nell'aggiornamento dei dati: {e}")
             return pd.DataFrame()

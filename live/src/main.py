@@ -172,7 +172,7 @@ class TradingBot:
                 if now.second == 0:
                     
                     # A) Routine Pre-Market (09:30)
-                    if now.hour == 7 and now.minute == 20:
+                    if now.hour == 9 and now.minute == 30:
                         self.pre_market_routine()
                         await asyncio.sleep(2)
 

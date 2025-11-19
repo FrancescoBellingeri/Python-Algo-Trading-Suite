@@ -36,6 +36,7 @@ def implement_atr_strategy(df, investment, risk_per_trade_pct, atr_multiplier, m
     no_of_shares = 0
     trailing_stop_price = 0
     dollar_risk = 0
+    fees = 0
 
     print(cl(f"INIZIO BACKTEST con Capitale: ${investment}, Rischio/Trade: {risk_per_trade_pct*100}%, ATR Multiplier: {atr_multiplier}\n", attrs=['bold']))
     
@@ -64,7 +65,7 @@ def implement_atr_strategy(df, investment, risk_per_trade_pct, atr_multiplier, m
             if exit_triggered:
                 equity += (no_of_shares * df.close[i])
                 in_position = False
-                pnl = (exit_price - entry_price) * no_of_shares - ibkr_commission(no_of_shares)
+                pnl = (exit_price - entry_price) * no_of_shares - fees
                 rr = pnl / dollar_risk
                 trades.append({
                     "entry_date": entry_date,
@@ -79,7 +80,7 @@ def implement_atr_strategy(df, investment, risk_per_trade_pct, atr_multiplier, m
                     "atr_at_entry": df['ATR_14'][i],
                     "sma200_at_entry": df['SMA_200'][i],
                     "exit_reason": exit_reason,
-                    "fees": ibkr_commission(no_of_shares),
+                    "fees": fees,
                 })
                 continue # Passa al ciclo successivo dopo aver chiuso la posizione
 
@@ -110,6 +111,8 @@ def implement_atr_strategy(df, investment, risk_per_trade_pct, atr_multiplier, m
                     max_risk_dollars=max_risk_dollars,
                     leverage=4
                 )
+
+                fees = ibkr_commission(no_of_shares) * 2
                 
                 # Esecuzione del trade
                 equity -= (no_of_shares * entry_price) 
@@ -131,7 +134,7 @@ def implement_atr_strategy(df, investment, risk_per_trade_pct, atr_multiplier, m
     print('')
     print(cl(f'EARNING: ${earning} ; ROI: {roi}%', attrs = ['bold']))
 
-df = pd.read_csv('data/qqq_5min.csv')
+df = pd.read_csv('../data/QQQ_5min.csv')
 df['date'] = pd.to_datetime(df['date'], utc=True).dt.tz_convert('America/New_York')
 # df = df[df['date'].dt.year >= 2022].reset_index(drop=True)
 # QQQ ATR_MULTIPLIER 8 MAX_RISK_DOLLARS 15000

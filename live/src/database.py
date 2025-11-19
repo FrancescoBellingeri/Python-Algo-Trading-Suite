@@ -86,9 +86,13 @@ class DatabaseHandler:
     def get_latest_data(self, symbol, limit=1000):
         """Legge i dati dal DB."""
         query = f"""
-        SELECT * FROM market_data 
-        WHERE symbol = '{symbol}' 
-        ORDER BY timestamp ASC 
+        SELECT * FROM (
+            SELECT * FROM market_data 
+            WHERE symbol = '{symbol}' 
+            ORDER BY timestamp DESC 
+            LIMIT {limit}
+        ) AS sub
+        ORDER BY timestamp ASC
         """
         try:
             df = pd.read_sql(query, self.engine)
@@ -105,10 +109,6 @@ class DatabaseHandler:
                 'sma_200': 'SMA_200',
                 'willr_10': 'WILLR_10'
             })
-            
-            # Manteniamo solo le ultime 'limit' righe
-            if limit and len(df) > limit:
-                df = df.iloc[-limit:]
                 
             return df.sort_values('date').reset_index(drop=True)
         except Exception as e:
