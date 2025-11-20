@@ -135,7 +135,7 @@ def run_backtest(df, investment, risk_per_trade_pct, atr_multiplier, max_risk_do
     return pd.DataFrame(trades)
    
 
-STARTING_CAPITAL = 100000
+STARTING_CAPITAL = 10000
 
 df = pd.read_csv('data/QQQ_5min.csv')
 df['date'] = pd.to_datetime(df['date'], utc=True).dt.tz_convert('America/New_York')
@@ -143,36 +143,6 @@ df['date'] = pd.to_datetime(df['date'], utc=True).dt.tz_convert('America/New_Yor
 # Execute backtest
 trades_df = run_backtest(df, STARTING_CAPITAL, risk_per_trade_pct=0.02, atr_multiplier=10, max_risk_dollars=30000)
 trades_df['exit_date'] = pd.to_datetime(trades_df['exit_date'], utc=True).dt.tz_convert('America/New_York')
+
 trades_df.to_csv('trades_log_5min.csv', index=False)
-print(f"\n✅ Salvati {len(trades_df)} trade in 'trades_log.csv'")
-
-# earning = round(equity - investment, 2)
-# roi = round(earning / investment * 100, 2)
-# print('')
-# print(cl(f'EARNING: ${earning} ; ROI: {roi}%', attrs = ['bold']))
-
-# Calculate data for buy and hold plots
-initial_price = df.iloc[0]['close']
-final_price = df.iloc[-1]['close']
-shares = STARTING_CAPITAL / initial_price
-    
-# Calcola l'equity curve del buy & hold
-buy_hold_df = pd.DataFrame({
-    'date': df['date'],
-    'equity': df['close'] * shares
-})
-
-# Create plot
-plt.figure(figsize=(20, 10))
-sns.set_style("whitegrid")
-
-plt.plot(trades_df['entry_date'], trades_df['equity'], 
-    color='blue', linewidth=1.5, label='Strategia')
-
-plt.plot(buy_hold_df['date'],  buy_hold_df['equity'],
-            color='green', linewidth=1.5, label='Buy & Hold')
-
-plt.axhline(y=STARTING_CAPITAL, color='r', linestyle='--', label='Capitale Iniziale')
-
-plt.title('Confronto Strategia vs Buy & Hold', fontsize=14, pad=20)
-plt.show()
+print(f"\n✅ Saved {len(trades_df)} trades to 'trades_log_5min.csv'")

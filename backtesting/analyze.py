@@ -42,7 +42,7 @@ STARTING_CAPITAL = 100000
 if len(trading_results) > 0:
     # Calcoliamo l'equity curve della strategia
     trading_results['cumulative_pnl'] = trading_results['pnl'].cumsum()
-    trading_results['equity'] = trading_results['equity_post_trade']
+    trading_results['equity'] = trading_results['equity']
 
     # trading_results['date'] = pd.to_datetime(trading_results['date'])
     
