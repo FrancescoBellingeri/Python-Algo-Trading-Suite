@@ -1,57 +1,91 @@
-📈 Async Mean Reversion Trading Bot
-A professional-grade algorithmic trading system built for Interactive Brokers (IBKR).
-It implements a Mean Reversion strategy using Williams %R and Trend Filters, featuring an asynchronous architecture for high-frequency responsiveness and database persistence.
+# Python Algo-Trading Suite 🚀
 
-Python
-PostgreSQL
-Coverage
+![Python](https://img.shields.io/badge/Python-3.9%2B-blue)
+![License](https://img.shields.io/badge/License-MIT-green)
+![Status](https://img.shields.io/badge/Status-Active-success)
 
-🚀 Key Features (Why this project matters)
-Asynchronous Core: Built on asyncio and ib_insync to handle non-blocking market data streams and order events concurrently.
-Robust Persistence: Uses SQLAlchemy (ORM) with a PostgreSQL database to store historical tick data and indicators, ensuring data integrity via upsert logic.
-Institutional Execution: Implements Bracket Orders (Parent + Child) to ensure atomic submission of Entry and Stop Loss, minimizing execution risk (naked positions).
-Safety First: Includes a comprehensive Unit Test Suite (pytest) validating Money Management logic, Leverage limits, and Signal generation before any live deployment.
-🛠️ Architecture
-The system is divided into decoupled modules to ensure maintainability:
+**An algorithmic trading framework designed for the Nasdaq-100 (QQQ). It features a custom event-driven backtester, volatility-adjusted risk management, and live execution capabilities via Interactive Brokers API.**
 
-DataHandler: Manages real-time data ingestion and database synchronization (gap filling).
-IndicatorCalculator: Computes technical indicators (ATR, SMA, Will%R) on the fly.
-ExecutionHandler: Calculates position sizing based on risk volatility (ATR-based) and manages order lifecycle.
-DatabaseHandler: Abstraction layer for PostgreSQL interactions.
-📊 Strategy Overview
-Concept: Mean Reversion on 5-minute timeframe.
-Entry: Buys when the asset is oversold (Will%R < -80) within a bullish trend (Price > SMA 200).
-Exit: Trend exhaustion or Stop Loss hit.
-Risk Management: Dynamic position sizing based on account equity percentage (1-2%) and volatility (ATR). Hard cap on leverage.
-⚙️ Installation
-Clone the repository:
+---
 
-bash
-git clone https://github.com/tuo-username/mean-reversion-bot.git
-cd mean-reversion-bot
-Install dependencies:
+## 📈 Performance Overview (Backtest 2009-2025)
 
-bash
-pip install -r requirements.txt
-Database Setup:
-Make sure PostgreSQL is running and create a database named trading_bot.
+The strategy focuses on capital efficiency and downside protection. While the Benchmark (QQQ Buy & Hold) suffered a **-35% drawdown**, this engine limited losses to **-14%**, achieving superior risk-adjusted returns.
 
-Configuration:
-Edit config.py with your IBKR account ID and Database credentials.
+![Equity Curve](output/equity_curve.png)
 
-Run:
+| Metric             | Strategy      | Benchmark (QQQ) | Note                            |
+| :----------------- | :------------ | :-------------- | :------------------------------ |
+| **Total Return**   | **5,163.42%** | 1,478%          | Significant Alpha generation    |
+| **CAGR**           | **28.37%**    | 19.0%           | Compound Annual Growth Rate     |
+| **Sharpe Ratio**   | **1.46**      | 0.95            | High return per unit of risk    |
+| **Sortino Ratio**  | **3.79**      | 1.34            | Exceptional downside protection |
+| **Max Drawdown**   | **-14.28%**   | -35.12%         | robust during bear markets      |
+| **Time in Market** | **29%**       | 100%            | Highly capital efficient        |
 
-bash
-python -m src.main
-🧪 Testing
-Reliability is key. The project includes unit tests for critical components.
+> _Metrics generated using QuantStats library based on 5-minute OHLC data._
 
-Run the full suite:
+---
 
-bash
-pytest tests/
-test_money_management.py: Validates risk calculations (never exceed max risk).
-test_order_execution.py: Verifies correct Bracket Order structure.
-test_strategy_logic.py: Ensures signals are generated only on valid market conditions.
-📝 Disclaimer
-This software is for educational purposes only. Do not risk money you cannot afford to lose.
+## 🧠 Strategy Logic
+
+The engine implements a **Mean Reversion in Trend** philosophy. It seeks to buy short-term oversold conditions but only when the long-term trend is bullish.
+
+### 1. Entry Signal (The "Vortex")
+
+- **Trend Filter:** Price must be above the **SMA 200** (Simple Moving Average). We only trade _with_ the long-term trend.
+- **Trigger:** **Williams %R (10-period)** drops below **-80**. This identifies a short-term pullback (oversold) within a bull market.
+
+### 2. Dynamic Risk Management (The "Shield") 🛡️
+
+This is the core of the engine. Position sizing is not fixed but strictly mathematical:
+
+- **ATR-Based Stops:** Stop Loss is calculated dynamically using the **Average True Range (ATR)** multiplied by a factor (e.g., 10x). This adapts the stop distance to market volatility.
+- **Fixed Fractional Risk:** Each trade risks exactly **2%** of the current account equity.
+- **Volatility Sizing:** If volatility is high (ATR is large), the stop is wider, and the position size (number of shares) automatically decreases to keep the dollar risk constant.
+
+### 3. Exit Mechanism
+
+- **Trailing Stop:** Locks in profits as the price rises, moving the stop level up based on ATR.
+- **Trend Reversal:** Emergency exit if the short-term momentum indicator (WillR) recovers while price breaks market structure.
+
+---
+
+## 🛠️ Tech Stack & Architecture
+
+The project is built with a focus on modularity and data analysis.
+
+- **Data Processing:** `Pandas`, `NumPy` (Vectorized operations for speed).
+- **Analysis:** `Pandas-TA` (Technical Analysis library), `QuantStats` (Financial metrics).
+- **Visualization:** `Matplotlib`, `Seaborn`.
+- **Live Execution:** `ib_insync` (Asynchronous wrapper for Interactive Brokers TWS API).
+
+## 🏗️ Project Architecture
+
+The repository is structured to enforce a clean separation between **Data Engineering**, **Research (Backtesting)**, and **Production (Live Trading)**.
+
+```bash
+├── backtesting/                # Simulation & Research Engine
+│   ├── backtest.py             # Core event-driven backtesting logic
+│   ├── backtest.ipynb          # Jupyter Notebook for strategy research & visualization (QuantStats integration)
+│   ├── analyze.py              # Custom performance metrics calculation
+│   └── heatmap.py              # Visualization utility for monthly return heatmaps
+│
+├── data/                       # Data Engineering (ETL Pipeline)
+│   ├── fetch_data.py           # IBKR API connector to download historical OHLC data
+│   ├── calc_data.py            # Feature Engineering (Pre-calculation of ATR, SMA, WillR)
+│   ├── check.py                # Data integrity & sanity checks (Timezone, Missing values)
+│   └── QQQ_5min.csv            # Processed dataset
+│
+├── live/                       # Production Trading Environment
+│   ├── src/                    # Live execution logic & order management system
+│   ├── config.py               # Strategy parameters (RISK_PCT, LEVERAGE, SYMBOLS)
+│   ├── .env.test               # Example .env configuration to start live trading
+│   ├── requirements.txt        # Project dependencies for live trading
+│   ├── logs/                   # Execution logs for audit trails
+│
+├── output/                     # Performance Artifacts
+│   ├── equity_curve.png        # Equity curve visualizations
+│   ├── trades_log.csv          # Detailed trade-by-trade execution logs
+│   └── stats_strategy.csv      # Computed risk metrics
+```

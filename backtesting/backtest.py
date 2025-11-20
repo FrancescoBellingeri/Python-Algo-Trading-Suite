@@ -1,12 +1,6 @@
 import pandas as pd
 import pandas_ta as ta
 import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
-from ib_insync import *
-from datetime import datetime
-import time
-import os
 
 def ibkr_commission(shares):
     total_fees = shares * 0.005
@@ -134,7 +128,6 @@ def run_backtest(df, investment, risk_per_trade_pct, atr_multiplier, max_risk_do
     print(f'EARNING: ${earning} ; ROI: {roi}%')
     return pd.DataFrame(trades)
    
-
 STARTING_CAPITAL = 10000
 
 df = pd.read_csv('data/QQQ_5min.csv')
@@ -144,5 +137,5 @@ df['date'] = pd.to_datetime(df['date'], utc=True).dt.tz_convert('America/New_Yor
 trades_df = run_backtest(df, STARTING_CAPITAL, risk_per_trade_pct=0.02, atr_multiplier=10, max_risk_dollars=30000)
 trades_df['exit_date'] = pd.to_datetime(trades_df['exit_date'], utc=True).dt.tz_convert('America/New_York')
 
-trades_df.to_csv('trades_log_5min.csv', index=False)
-print(f"\n✅ Saved {len(trades_df)} trades to 'trades_log_5min.csv'")
+trades_df.to_csv('output/trades_log.csv', index=False)
+print(f"\n✅ Saved {len(trades_df)} trades to 'output/trades_log.csv'")
