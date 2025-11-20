@@ -7,7 +7,10 @@ from src.ib_connector import IBConnector
 from src.data_handler import DataHandler
 from src.indicator_calculator import IndicatorCalculator
 from src.execution_handler import ExecutionHandler
+from src.ib_dashboard_handler import IBDashboardHandler
+from src.redis_publisher import redis_publisher
 from src.logger import logger
+import config
 
 class TradingBot:
     """Bot di trading automatico che coordina tutti i moduli."""
@@ -23,8 +26,13 @@ class TradingBot:
         self.is_running = True
         self.in_position = False
         self.last_signal_time = None
+        self.bot_start_time = datetime.now()
         
         logger.info("Trading Bot inizializzato")
+
+        # Invia stato iniziale alla dashboard
+        if redis_publisher.enabled:
+            redis_publisher.log("info", "🚀 Trading Bot inizializzato")
     
     async def initialize_components(self):
         """Inizializza tutti i componenti del sistema."""
@@ -32,7 +40,17 @@ class TradingBot:
             # Connetti a IB
             self.connector = IBConnector()
             if not await self.connector.connect():
+                redis_publisher.send_error("Impossibile connettersi a IB")
                 raise Exception("Impossibile connettersi a IB")
+            
+            if config.WEBSOCKET_ENABLED and redis_publisher.enabled:
+                self.dashboard_handler = IBDashboardHandler(self.connector.ib)
+                
+                # Setup callback per comandi dalla dashboard
+                redis_publisher.set_command_callback(self.handle_dashboard_command)
+                
+                logger.info("✅ Dashboard integration attivata")
+                redis_publisher.log("success", "Dashboard integration attiva")
             
             # Inizializza i moduli
             self.data_handler = DataHandler(self.connector)
@@ -41,22 +59,69 @@ class TradingBot:
 
             if not self.execution.update_capital():
                 logger.error("Fallito l'aggiornamento del capitale. Il bot si ferma per sicurezza.")
+                redis_publisher.send_error("Fallito aggiornamento capitale")
                 return False
+            
+            # Invia capitale alla dashboard
+            capital_info = {
+                "available_capital": self.execution.capital,
+                "max_risk_per_trade": self.execution.base_risk,
+                "position_size_limit": self.execution.capital * self.execution.base_risk
+            }
+            redis_publisher.publish("capital-update", capital_info)
             
             position_info = self.execution.sync_position_state()
             if position_info:
                 self.in_position = True
                 logger.warning(f"⚠️ Bot avviato con posizione aperta di {position_info['shares']} shares")
+                redis_publisher.log("warning", f"Bot avviato con posizione aperta: {position_info['shares']} shares")
+
+                # Invia info posizione alla dashboard
+                redis_publisher.publish("position-status", {
+                    "has_position": True,
+                    "shares": position_info['shares'],
+                    "entry_price": position_info.get('avg_price', 0)
+                })
             else:
                 self.in_position = False
                 logger.info("✅ Bot avviato senza posizioni aperte")
+                redis_publisher.log("success", "Bot avviato senza posizioni aperte")
+                redis_publisher.publish("position-status", {"has_position": False})
             
             logger.info("Tutti i componenti inizializzati con successo")
+            redis_publisher.log("success", "✅ Tutti i componenti inizializzati")
+
+            # Invia stato sistema alla dashboard
+            self.send_system_status()
+
             return True
             
         except Exception as e:
             logger.error(f"Errore nell'inizializzazione: {e}")
+            redis_publisher.send_error(f"Errore inizializzazione: {str(e)}")
             return False
+    
+    def send_system_status(self):
+        """Invia stato completo del sistema alla dashboard."""
+        status = {
+            "bot_status": "running" if self.is_running else "stopped",
+            "connection_status": "connected" if self.connector else "disconnected",
+            "in_position": self.in_position,
+            "market_hours": self.is_market_open(),
+            "uptime_seconds": (datetime.now() - self.bot_start_time).total_seconds(),
+            "config": {
+                "symbol": config.SYMBOL,
+                "exchange": config.EXCHANGE,
+                "max_risk": config.MAX_RISK_PER_TRADE,
+                "paper_trading": config.IB_PORT == 7497
+            }
+        }
+        redis_publisher.publish("system-status", status)
+    
+    def is_market_open(self):
+        """Verifica se il mercato è aperto."""
+        now = datetime.now(ZoneInfo("America/New_York"))
+        return time(9, 30) <= now.time() <= time(16, 0) and now.weekday() < 5
     
     def pre_market_routine(self):
         """
@@ -66,6 +131,9 @@ class TradingBot:
         logger.info("=" * 50)
         logger.info("INIZIO ROUTINE PRE-MARKET")
         logger.info("=" * 50)
+
+        redis_publisher.log("info", "🔔 Inizio routine pre-market")
+        redis_publisher.publish("market-event", {"type": "pre-market", "time": datetime.now().isoformat()})
         
         try:
             # Controlliamo se c'è una posizione aperta da ieri
@@ -73,15 +141,36 @@ class TradingBot:
             
             # 1. Aggiorna i dati storici
             logger.info("1. Aggiornamento dati storici...")
+            redis_publisher.log("info", "📊 Aggiornamento dati storici...")
+
             df = self.data_handler.download_historical_data()
             if df.empty:
                 logger.error("Errore nell'aggiornamento dati")
+                redis_publisher.send_error("Errore aggiornamento dati storici")
                 return
             
             self.indicator_calculator.calculate_all(df)
+
+            # Invia ultimi indicatori alla dashboard
+            if not df.empty:
+                last_row = df.iloc[-1]
+                indicators = {
+                    "rsi": float(last_row.get('RSI', 0)),
+                    "macd": float(last_row.get('MACD', 0)),
+                    "macd_signal": float(last_row.get('MACD_signal', 0)),
+                    "bb_upper": float(last_row.get('BB_Upper', 0)),
+                    "bb_lower": float(last_row.get('BB_Lower', 0)),
+                    "sma_20": float(last_row.get('SMA_20', 0)),
+                    "sma_50": float(last_row.get('SMA_50', 0)),
+                    "volume": float(last_row.get('Volume', 0)),
+                    "close": float(last_row.get('Close', 0))
+                }
+                redis_publisher.publish("indicators-update", indicators)
+                redis_publisher.log("success", "✅ Indicatori calcolati e aggiornati")
             
         except Exception as e:
             logger.error(f"Errore nella routine pre-market: {e}")
+            redis_publisher.send_error(f"Errore routine pre-market: {str(e)}")
     
     def get_open_positions(self):
         """
@@ -92,12 +181,24 @@ class TradingBot:
             positions = self.connector.ib.positions()
             
             logger.info(f"Trovate {len(positions)} posizioni aperte")
+            redis_publisher.log("info", f"📈 Trovate {len(positions)} posizioni aperte")
 
             if len(positions) > 0:
                 self.in_position = True
+
+                # Invia dettagli posizioni alla dashboard
+                for pos in positions:
+                    if pos.contract.symbol == config.SYMBOL:
+                        pos_info = {
+                            "symbol": pos.contract.symbol,
+                            "shares": pos.position,
+                            "avg_cost": pos.avgCost
+                        }
+                        redis_publisher.publish("position-info", pos_info)
             
         except Exception as e:
             logger.error(f"Errore nel recupero posizioni: {e}")
+            redis_publisher.send_error(f"Errore recupero posizioni: {str(e)}")
     
     def end_of_day_routine(self):
         """
@@ -108,9 +209,13 @@ class TradingBot:
         logger.info("ROUTINE FINE GIORNATA")
         logger.info("=" * 50)
         
+        redis_publisher.log("info", "🔔 Inizio routine fine giornata")
+        redis_publisher.publish("market-event", {"type": "market-close", "time": datetime.now().isoformat()})
+        
         try:
             
             logger.info("Fine giornata completata")
+            redis_publisher.log("success", "✅ Routine fine giornata completata")
             
         except Exception as e:
             logger.error(f"Errore nella routine EOD: {e}")
@@ -123,45 +228,198 @@ class TradingBot:
             current_time = datetime.now(ZoneInfo("America/New_York"))
             
             # Verifica che siamo in orario di trading (9:35 - 15:55 NY time)
-            if not (time(9, 35) <= current_time.time() <= time(15, 55)):
+            if not self.is_market_open():
                 return
             
             logger.info(f"[{current_time.strftime('%H:%M:%S')}] Processando nuova candela 5 minuti...")
+            redis_publisher.log("debug", f"📊 Nuova candela 5min: {current_time.strftime('%H:%M:%S')}")
             
             # 1. Aggiorna dati
             df = self.data_handler.update_data(max_retries=10, retry_delay=0.2)
             if df is None or df.empty:
                 logger.error("Errore nell'aggiornamento dati")
+                redis_publisher.send_error("Errore aggiornamento dati candela")
                 return
             
             # 2. Calcola indicatori (incrementale)
             df = self.indicator_calculator.calculate_incremental(df)
-            
-            # 4. Check segnali (se non siamo già in posizione)
-            # if not self.in_position:
-            #     if self.execution.check_entry_signals(df):
-            #         self.in_position = True
-            # else:
-            #     if self.execution.check_exit_signals(df):
-            #         logger.info("Trade chiuso perchè non rispettava più le condizioni")
-            #         self.in_position = False
 
-            #     self.execution.update_trailing_stop(df)
+            # Invia ultimi valori alla dashboard
+            if not df.empty:
+                last_row = df.iloc[-1]
+
+                candle_data = {
+                    "time": current_time.isoformat(),
+                    "open": float(last_row.get('Open', 0)),
+                    "high": float(last_row.get('High', 0)),
+                    "low": float(last_row.get('Low', 0)),
+                    "close": float(last_row.get('Close', 0)),
+                    "volume": float(last_row.get('Volume', 0)),
+                    "rsi": float(last_row.get('RSI', 0)),
+                    "macd": float(last_row.get('MACD', 0)),
+                    "macd_signal": float(last_row.get('MACD_signal', 0))
+                }
+                redis_publisher.publish("candle-update", candle_data)
+            
+            # 3. Check segnali (commentato nel tuo codice originale)
+            if not self.in_position:
+                signal = self.execution.check_entry_signals(df)
+                if signal:
+                    redis_publisher.send_trade_signal("BUY", {
+                        "reason": "Entry signal detected",
+                        "indicators": candle_data
+                    })
+                    self.in_position = True
+            else:
+                if self.execution.check_exit_signals(df):
+                    redis_publisher.send_trade_signal("SELL", {
+                        "reason": "Exit signal detected",
+                        "indicators": candle_data
+                    })
+                    logger.info("Trade chiuso perchè non rispettava più le condizioni")
+                    self.in_position = False
+            
+                self.execution.update_trailing_stop(df)
+            
+            # 4. Aggiorna stato sistema
+            self.send_system_status()
             
         except Exception as e:
             logger.error(f"Errore in on_new_candle: {e}")
+            redis_publisher.send_error(f"Errore processamento candela: {str(e)}")
+
+    def handle_dashboard_command(self, command: dict):
+        """
+        Gestisce comandi ricevuti dalla dashboard via Redis.
+        """
+        cmd_type = command.get("type")
+        payload = command.get("payload", {})
+        
+        logger.info(f"📥 Comando ricevuto dalla dashboard: {cmd_type}")
+        redis_publisher.log("info", f"Comando ricevuto: {cmd_type}")
+        
+        try:
+            if cmd_type == "stop":
+                self.handle_stop_command()
+                
+            elif cmd_type == "pause":
+                self.handle_pause_command()
+                
+            elif cmd_type == "resume":
+                self.handle_resume_command()
+                
+            elif cmd_type == "status":
+                self.send_system_status()
+                if self.dashboard_handler:
+                    self.dashboard_handler._send_initial_state()
+                    
+            elif cmd_type == "close_positions":
+                self.handle_close_positions()
+                
+            elif cmd_type == "cancel_orders":
+                self.handle_cancel_orders()
+                
+            elif cmd_type == "update_risk":
+                new_risk = payload.get("max_risk")
+                if new_risk:
+                    config.MAX_RISK_PER_TRADE = new_risk
+                    redis_publisher.log("info", f"Risk limit aggiornato a {new_risk}")
+                    
+            elif cmd_type == "force_update":
+                # Forza aggiornamento dati
+                self.force_data_update()
+                
+            else:
+                logger.warning(f"Comando non riconosciuto: {cmd_type}")
+                redis_publisher.log("warning", f"Comando non riconosciuto: {cmd_type}")
+                
+        except Exception as e:
+            logger.error(f"Errore gestione comando {cmd_type}: {e}")
+            redis_publisher.send_error(f"Errore esecuzione comando: {str(e)}")
+    
+    def handle_stop_command(self):
+        """Gestisce comando di stop."""
+        logger.warning("⛔ STOP command received - Shutting down bot")
+        redis_publisher.log("warning", "⛔ Bot arrestato da comando dashboard")
+        self.is_running = False
+        
+        # Chiudi posizioni se richiesto
+        if self.in_position:
+            redis_publisher.log("warning", "Chiusura posizioni prima dello shutdown...")
+            # self.execution.close_all_positions()
+    
+    def handle_pause_command(self):
+        """Gestisce comando di pausa."""
+        logger.info("⏸️ PAUSE command received")
+        redis_publisher.log("info", "⏸️ Bot in pausa")
+        self.is_running = False
+        redis_publisher.publish("bot-status", {"status": "paused"})
+    
+    def handle_resume_command(self):
+        """Gestisce comando di resume."""
+        logger.info("▶️ RESUME command received")
+        redis_publisher.log("info", "▶️ Bot ripreso")
+        self.is_running = True
+        redis_publisher.publish("bot-status", {"status": "running"})
+    
+    def handle_close_positions(self):
+        """Chiude tutte le posizioni aperte."""
+        logger.warning("Chiusura posizioni richiesta dalla dashboard")
+        redis_publisher.log("warning", "📉 Chiusura posizioni da dashboard")
+        
+        if self.execution and self.execution.has_position():
+            # self.execution.close_all_positions()
+            self.in_position = False
+            redis_publisher.publish("position-status", {"has_position": False})
+        else:
+            redis_publisher.log("info", "Nessuna posizione da chiudere")
+    
+    def handle_cancel_orders(self):
+        """Cancella tutti gli ordini aperti."""
+        logger.warning("Cancellazione ordini richiesta dalla dashboard")
+        redis_publisher.log("warning", "❌ Cancellazione ordini da dashboard")
+        
+        if self.connector:
+            self.connector.ib.reqGlobalCancel()
+            redis_publisher.log("success", "Tutti gli ordini cancellati")
+    
+    def force_data_update(self):
+        """Forza aggiornamento immediato dei dati."""
+        logger.info("Aggiornamento dati forzato dalla dashboard")
+        redis_publisher.log("info", "🔄 Aggiornamento dati forzato")
+        
+        try:
+            df = self.data_handler.update_data()
+            if df is not None and not df.empty:
+                df = self.indicator_calculator.calculate_incremental(df)
+                redis_publisher.log("success", "✅ Dati aggiornati con successo")
+                
+                # Invia ultimi dati
+                last_row = df.iloc[-1]
+                candle_data = {
+                    "time": datetime.now().isoformat(),
+                    "close": float(last_row.get('Close', 0)),
+                    "volume": float(last_row.get('Volume', 0)),
+                    "rsi": float(last_row.get('RSI', 0))
+                }
+                redis_publisher.publish("data-update", candle_data)
+        except Exception as e:
+            redis_publisher.send_error(f"Errore aggiornamento forzato: {str(e)}")
 
     async def run(self):
         """Loop principale asincrono."""
         logger.info("Trading Bot avviato")
+        redis_publisher.log("success", "🚀 Trading Bot avviato")
         
         if not await self.initialize_components():
+            redis_publisher.send_error("Inizializzazione fallita - bot arrestato")
             return
         
         # Definizione orari target (New York Time)
         ny_tz = ZoneInfo("America/New_York")
         
         logger.info("⏳ In attesa di trigger orari...")
+        redis_publisher.log("info", "⏳ Bot in attesa trigger orari...")
 
         while self.is_running:
             try:
@@ -193,22 +451,41 @@ class TradingBot:
                 
             except KeyboardInterrupt:
                 self.is_running = False
+                redis_publisher.log("warning", "Bot interrotto da tastiera")
             except Exception as e:
                 logger.error(f"Errore nel loop: {e}")
+                redis_publisher.send_error(f"Errore nel loop principale: {str(e)}")
                 await asyncio.sleep(5)
     
     def shutdown(self):
         """Chiude il bot in modo pulito."""
         logger.info("Shutdown del bot...")
+        redis_publisher.log("warning", "🛑 Shutdown bot in corso...")
         
-        # Chiudi posizioni se necessario
-        if self.execution and self.execution.has_position():
-            logger.warning("Chiusura posizioni aperte...")
-            # self.execution.close_all_positions()
-        
-        # Disconnetti da IB
-        if self.connector:
-            self.connector.disconnect()
+        try:
+            # Invia stato finale
+            redis_publisher.publish("bot-status", {
+                "status": "stopped",
+                "timestamp": datetime.now().isoformat(),
+                "reason": "shutdown"
+            })
+            
+            # Chiudi posizioni se necessario
+            if self.execution and self.execution.has_position():
+                logger.warning("Chiusura posizioni aperte...")
+                redis_publisher.log("warning", "Chiusura posizioni prima dello shutdown")
+                # self.execution.close_all_positions()
+            
+            # Disconnetti da IB
+            if self.connector:
+                self.connector.disconnect()
+                redis_publisher.log("info", "Disconnesso da IB")
+            
+            # Disconnetti Redis
+            redis_publisher.disconnect()
+            
+        except Exception as e:
+            logger.error(f"Errore durante shutdown: {e}")
         
         logger.info("Bot terminato")
 

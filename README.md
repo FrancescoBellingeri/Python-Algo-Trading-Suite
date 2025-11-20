@@ -27,6 +27,29 @@ The strategy focuses on capital efficiency and downside protection. While the Be
 
 ---
 
+## ⚠️ Backtest Assumptions & Limitations
+
+While the strategy shows significant alpha, it is crucial to interpret these results within the context of the following assumptions. A realistic expectation for live trading should apply a haircut to these metrics.
+
+### 1. Execution & Slippage (Zero-Latency Assumption)
+
+- **Slippage:** NOT modeled. The backtest assumes execution at the exact close price of the signal candle.
+- _Impact Analysis:_ Since **QQQ** is highly liquid with tight spreads (typically $0.01), slippage impact is expected to be minimal compared to lower-cap equities. However, during high-volatility events, actual fill prices may deviate from model prices.
+- **Commissions:** Fully modeled using **Interactive Brokers Tiered Pricing** structure (approx. $0.0035/share min).
+
+### 2. Data Granularity & Look-Ahead Bias
+
+- **Data Source:** 5-minute OHLC bars.
+- **Intra-bar Risk:** The model checks stop-losses at the close of the 5-minute bar, not tick-by-tick. In a flash crash scenario, the exit price could be lower than the theoretical stop level.
+- **Look-Ahead:** Strict care was taken to avoid look-ahead bias; signals are calculated using `shift(1)` data to ensure trades occur on the _next_ open/close after the signal is generated.
+
+### 3. Market Regime Bias
+
+- The dataset (2009-2025) consists largely of a secular bull market (QE era). While the strategy survived the 2022 bear market and COVID crash (due to the Trend Filter), performance relies on the persistence of Mean Reversion characteristics in the Nasdaq-100.
+- **Future Work:** A Walk-Forward Analysis (WFA) is planned to validate parameter robustness across different time windows.
+
+---
+
 ## 🧠 Strategy Logic
 
 The engine implements a **Mean Reversion in Trend** philosophy. It seeks to buy short-term oversold conditions but only when the long-term trend is bullish.

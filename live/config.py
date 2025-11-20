@@ -19,6 +19,23 @@ DB_NAME = os.getenv('DB_NAME')
 # Complete SQLAlchemy connection string
 DATABASE_URL = f"postgresql+psycopg2://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
+# === REDIS CONFIGURATION ===
+REDIS_HOST = os.getenv('REDIS_HOST', 'localhost')
+REDIS_PORT = int(os.getenv('REDIS_PORT', 6379))
+REDIS_DB = int(os.getenv('REDIS_DB', 0))
+REDIS_CHANNEL = os.getenv('REDIS_CHANNEL', 'trading-bot-channel')
+REDIS_COMMANDS_CHANNEL = os.getenv('REDIS_COMMANDS_CHANNEL', 'trading-bot-commands')
+
+# === WEBSOCKET SERVER ===
+WEBSOCKET_ENABLED = os.getenv('WEBSOCKET_ENABLED', 'true').lower() == 'true'
+WEBSOCKET_UPDATE_INTERVAL = float(os.getenv('WEBSOCKET_UPDATE_INTERVAL', '1.0'))  # secondi
+
+# === DASHBOARD SETTINGS ===
+SEND_POSITIONS = os.getenv('SEND_POSITIONS', 'true').lower() == 'true'
+SEND_ORDERS = os.getenv('SEND_ORDERS', 'true').lower() == 'true'
+SEND_PNL = os.getenv('SEND_PNL', 'true').lower() == 'true'
+SEND_LOGS = os.getenv('SEND_LOGS', 'true').lower() == 'true'
+
 # === TRADING PARAMETERS ===
 SYMBOL = 'QQQ'
 EXCHANGE = 'SMART'
