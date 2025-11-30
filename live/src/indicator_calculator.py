@@ -3,6 +3,7 @@ import pandas_ta as ta
 import os
 from src.logger import logger
 from src.database import DatabaseHandler
+from src.redis_publisher import redis_publisher
 from config import SYMBOL
 
 class IndicatorCalculator:
@@ -29,6 +30,15 @@ class IndicatorCalculator:
             os.makedirs(self.data_dir)
         
         self.data_file = os.path.join(self.data_dir, f'{self.symbol}_5min.csv')
+
+        # Invia configurazione indicatori alla dashboard
+        redis_publisher.publish("indicators-config", {
+            "symbol": self.symbol,
+            "parameters": self.params,
+            "min_candles_required": self.min_candles_required,
+            "indicators": ["ATR_14", "SMA_200", "WILLR_10"]
+        })
+        redis_publisher.log("info", f"📊 Indicatori configurati: ATR({self.params['ATR_LENGTH']}), SMA({self.params['SMA_LENGTH']}), WILLR({self.params['WILLR_LENGTH']})")
             
     def calculate_all(self, df, timezone='America/New_York'):
         """
@@ -53,6 +63,12 @@ class IndicatorCalculator:
             if len(df) < self.min_candles_required:
                 logger.warning(f"Dati insufficienti per calcolare tutti gli indicatori. "
                              f"Richiesti: {self.min_candles_required}, Disponibili: {len(df)}")
+                redis_publisher.log("warning", f"⚠️ Dati insufficienti: {len(df)}/{self.min_candles_required} candele")
+                redis_publisher.publish("indicators-warning", {
+                    "type": "insufficient_data",
+                    "required": self.min_candles_required,
+                    "available": len(df)
+                })
             
             # Calcola ATR (Average True Range)
             df['ATR_14'] = ta.atr(df['high'], df['low'], df['close'], length=self.params['ATR_LENGTH'])
@@ -69,6 +85,11 @@ class IndicatorCalculator:
             
         except Exception as e:
             logger.error(f"Errore nel calcolo degli indicatori: {e}")
+            redis_publisher.send_error(f"Errore calcolo indicatori: {str(e)}")
+            redis_publisher.publish("indicators-calculation", {
+                "status": "error",
+                "error": str(e)
+            })
             return df
         
     def calculate_incremental(self, df):

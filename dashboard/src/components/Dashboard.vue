@@ -122,7 +122,7 @@
                     'font-semibold',
                     pos.unrealizedPNL >= 0 ? 'text-emerald-400' : 'text-red-400'
                   ]">
-                    ${{ pos.unrealizedPNL?.toFixed(2) || '0.00' }}
+                    ${{ dailyPnl?.toFixed(2) || '0.00' }}
                   </p>
                   <p class="text-xs text-gray-400">Unrealized P&L</p>
                 </div>

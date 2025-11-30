@@ -1,7 +1,9 @@
 // composables/useWebSocket.js
 import { ref, onMounted, onUnmounted } from "vue";
 
-export function useWebSocket(url = "ws://localhost:8002/ws") {
+const DEFAULT_WS_URL = import.meta.env.VITE_WS_URL || "ws://localhost:8000/ws";
+
+export function useWebSocket(url = DEFAULT_WS_URL) {
   // Connection state
   const ws = ref(null);
   const connected = ref(false);

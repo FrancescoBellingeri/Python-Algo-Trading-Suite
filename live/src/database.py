@@ -4,6 +4,7 @@ from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy.dialects.postgresql import TIMESTAMP
 from config import DATABASE_URL
 from src.logger import logger
+from src.redis_publisher import redis_publisher
 
 Base = declarative_base()
 
@@ -38,8 +39,10 @@ class DatabaseHandler:
         try:
             Base.metadata.create_all(self.engine)
             logger.info("Connessione DB PostgreSQL stabilita e tabelle verificate.")
+            redis_publisher.log("success", "Connessione DB PostgreSQL stabilita e tabelle verificate.")
         except Exception as e:
             logger.error(f"Errore connessione DB: {e}")
+            redis_publisher.send_error(f"Errore connessione DB: {e}")
             raise e
         
         self.Session = sessionmaker(bind=self.engine)
@@ -79,6 +82,7 @@ class DatabaseHandler:
         except Exception as e:
             session.rollback()
             logger.error(f"Errore salvataggio DB: {e}")
+            redis_publisher.send_error(f"Errore salvataggio DB: {e}")
             return False
         finally:
             session.close()
@@ -113,4 +117,5 @@ class DatabaseHandler:
             return df.sort_values('date').reset_index(drop=True)
         except Exception as e:
             logger.error(f"Errore lettura DB: {e}")
+            redis_publisher.send_error(f"Errore lettura DB: {e}")
             return pd.DataFrame()

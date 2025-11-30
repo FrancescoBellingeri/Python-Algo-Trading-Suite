@@ -5,8 +5,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # === IB CONNECTION ===
-IB_HOST = os.getenv('IB_HOST', '127.0.0.1')
-IB_PORT = int(os.getenv('IB_PORT', '7497'))  # 7497 for TWS, 4001 for IB Gateway
+IB_HOST = os.getenv('IB_HOST', 'ib-gateway')
+IB_PORT = int(os.getenv('IB_PORT', '4004'))  # 7497 for TWS, 4001 for IB Gateway
 IB_CLIENT_ID = int(os.getenv('IB_CLIENT_ID', '1'))
 
 # === DATABASE CONFIGURATION ===
@@ -18,6 +18,15 @@ DB_NAME = os.getenv('DB_NAME')
 
 # Complete SQLAlchemy connection string
 DATABASE_URL = f"postgresql+psycopg2://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+
+POSTGRES_USER=os.getenv('POSTGRES_USER')
+POSTGRES_PASSWORD=os.getenv('POSTGRES_PASSWORD')
+POSTGRES_DB=os.getenv('POSTGRES_DB')
+POSTGRES_HOST=os.getenv('POSTGRES_HOST')
+POSTGRES_PORT=os.getenv('POSTGRES_PORT')
+
+# Complete SQLAlchemy connection string
+POSTGRES_URL = f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
 
 # === REDIS CONFIGURATION ===
 REDIS_HOST = os.getenv('REDIS_HOST', 'localhost')

@@ -28,7 +28,8 @@ class IBConnector:
             await self.ib.connectAsync(
                 host=IB_HOST,
                 port=IB_PORT,
-                clientId=IB_CLIENT_ID
+                clientId=IB_CLIENT_ID,
+                timeout=15
             )
             
             self.ib.sleep(1) 

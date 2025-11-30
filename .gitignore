@@ -36,6 +36,9 @@ live/logs/
 live/venv/
 live/.env
 
+dashboard/.env.production
+dashboard/.env.development
+
 # -------------------------------
 # Misc
 # -------------------------------

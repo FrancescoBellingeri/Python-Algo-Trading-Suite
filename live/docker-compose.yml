@@ -1,0 +1,111 @@
+services:
+  # --- 1. IL CERVELLO: INTERACTIVE BROKERS GATEWAY ---
+  ib-gateway:
+    image: ghcr.io/gnzsnz/ib-gateway:stable
+    container_name: ib-gateway
+    restart: always
+    environment:
+      # Credenziali dal file .env
+      TWS_USERID: ${TWS_USERID}
+      TWS_PASSWORD: ${TWS_PASSWORD}
+      TRADING_MODE: ${TRADING_MODE}
+      VNC_SERVER_PASSWORD: ${VNC_PASSWORD}
+
+      # Impostazioni Critiche per l'automazione
+      TWS_SETTINGS_PATH: /home/ibgateway/Jts
+      TWOFA_TIMEOUT_ACTION: restart # Se fallisce 2FA, riprova
+      AUTO_RESTART_TIME: "04:00 AM" # Riavvia tutto alle 4 di notte (prima del pre-market)
+      ALLOW_BLIND_TRADING: "yes" # Fondamentale per non bloccare gli ordini
+      READ_ONLY_API: "no" # Permette di inviare ordini
+
+    ports:
+      - "4002:4002"
+      - "5900:5900" # VNC Port (per vedere la GUI)
+    volumes:
+      - ./ib_settings:/root/Jts
+    networks:
+      - trading-network
+
+  # --- 3. IL BRACCIO: IL TUO BOT PYTHON ---
+  trading-bot:
+    build: .
+    container_name: python_bot
+    restart: always
+    env_file:
+      - .env
+    environment:
+      IB_HOST: ib-gateway
+      IB_PORT: 4004
+      IB_CLIENT_ID: 99
+      TZ: America/New_York
+      DB_HOST: trading-db
+      POSTGRES_USER: ${POSTGRES_USER} # Passiamo esplicitamente l'user al bot
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD} # Passiamo la password
+      POSTGRES_DB: ${POSTGRES_DB}
+      REDIS_HOST: trading-redis
+      REDIS_PORT: 6379
+    depends_on:
+      - ib-gateway
+      - db
+      - redis
+    volumes:
+      - ./logs:/app/logs
+      - ./bot_state.json:/app/bot_state.json # Persistenza per la logica Overnight
+    networks:
+      - trading-network
+
+  db:
+    image: postgres:15-alpine
+    container_name: trading-db
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      # Mappa la cartella locale dentro il container per salvare i dati
+      - ./data/postgres:/var/lib/postgresql/data
+    networks:
+      - trading-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:alpine
+    container_name: trading-redis
+    restart: always
+    networks:
+      - trading-network
+
+  backend:
+    build: ./backend
+    container_name: trading-backend
+    restart: always
+    environment:
+      # Configurazione Redis interna a Docker
+      - REDIS_HOST=redis # Nome del servizio Redis nel docker-compose
+      - REDIS_PORT=6379
+
+      # Configurazione per Vercel (CORS)
+      # Metti sia localhost (per i test) che il dominio Vercel
+      - ALLOWED_ORIGINS=http://localhost:5173,https://python-algo-trading-suite.vercel.app
+
+      # (Opzionale) Se il backend deve leggere dal DB
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - DB_HOST=db
+    ports:
+      - "8000:8000" # Espone la porta 8000 (SOLO HTTP, vedi sotto per HTTPS)
+    depends_on:
+      - redis
+      - db
+    networks:
+      - trading-network
+
+networks:
+  trading-network:
+    driver: bridge

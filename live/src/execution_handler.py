@@ -1,6 +1,7 @@
 import pandas as pd
 from ib_insync import Stock, MarketOrder, StopOrder
 from src.logger import logger
+from src.redis_publisher import redis_publisher
 from config import SYMBOL, EXCHANGE, CURRENCY, MAX_RISK_PER_TRADE
 
 class ExecutionHandler:
@@ -29,6 +30,15 @@ class ExecutionHandler:
         self.atr_multiplier = 10
         
         logger.info(f"ExecutionHandler inizializzato - Capitale: ${capital:,.0f}")
+        # Invia info iniziali alla dashboard
+        redis_publisher.log("info", f"💰 ExecutionHandler inizializzato - Capitale: ${capital:,.0f}")
+        redis_publisher.publish("execution-config", {
+            "symbol": SYMBOL,
+            "capital": capital,
+            "risk_per_trade": self.base_risk,
+            "atr_multiplier": self.atr_multiplier,
+            "leverage": 4
+        })
     
     def calculate_position_size(self, entry_price, stop_loss, account_size, risk_per_trade_pct, leverage=4):
         """
@@ -63,6 +73,7 @@ class ExecutionHandler:
         
         if self.has_position():
             logger.warning("Posizione già aperta")
+            redis_publisher.log("warning", "⚠️ Segnale entry ignorato - posizione già aperta")
             return False
         
         last_candle = df.iloc[-1]
@@ -73,6 +84,7 @@ class ExecutionHandler:
 
             if atr_value <= 0:
                 logger.error("ATR < 0, impossibile eseguire il trade")
+                redis_publisher.send_error("ATR invalido, trade annullato")
                 return False
             
             risk_per_share = atr_value * self.atr_multiplier
@@ -89,6 +101,7 @@ class ExecutionHandler:
         
             if shares <= 0:
                 logger.warning("Position size = 0, nessun trade")
+                redis_publisher.log("warning", "⚠️ Position size = 0, trade annullato")
                 return False
 
             # Piazza l'ordine
@@ -123,6 +136,7 @@ class ExecutionHandler:
         """
         try:
             logger.info(f"📈 Invio Bracket Order: Buy {shares} @ MKT, Stop @ {stop_price}")
+            redis_publisher.log("info", f"📈 Invio ordine: BUY {shares} shares @ MARKET, Stop Loss @ ${stop_price:.2f}")
 
             # 1. Ordine Genitore (Entry)
             parent = MarketOrder('BUY', shares)
@@ -132,11 +146,12 @@ class ExecutionHandler:
             stop_loss = StopOrder('SELL', shares, stop_price)
             stop_loss.transmit = True # <--- Questo invierà tutto il pacchetto
             
-            parent_trade = self.ib.placeOrder(parent)
+            parent_trade = self.ib.placeOrder(self.contract, parent)
             stop_loss.parentId = parent.orderId
-            stop_trade = self.ib.placeOrder(stop_loss)
+            stop_trade = self.ib.placeOrder(self.contract, stop_loss)
             
             logger.info(f"Ordini inviati. Parent ID: {parent.orderId}, Stop ParentId: {stop_loss.parentId}")
+            redis_publisher.log("info", f"📤 Ordini inviati - Parent ID: {parent.orderId}")
 
             # 5. Attendiamo conferma del FILL del genitore
             self.ib.waitOnUpdate(parent_trade, timeout=10)
@@ -152,15 +167,43 @@ class ExecutionHandler:
                 self.current_position = parent_trade
                 
                 logger.info(f"✅ Bracket Eseguito. Entry: {fill_price}, Stop Attivo: {stop_price}")
+                # Invia conferma esecuzione alla dashboard
+                redis_publisher.log("success", f"✅ POSIZIONE APERTA: {shares} shares @ ${fill_price:.2f}")
+                redis_publisher.publish("order-filled", {
+                    "type": "entry",
+                    "side": "BUY",
+                    "shares": shares,
+                    "fill_price": fill_price,
+                    "stop_price": stop_price,
+                    "order_id": parent.orderId
+                })
+                
+                redis_publisher.publish("position-opened", {
+                    "symbol": SYMBOL,
+                    "shares": shares,
+                    "entry_price": fill_price,
+                    "stop_price": stop_price,
+                    "risk": (fill_price - stop_price) * shares,
+                    "timestamp": pd.Timestamp.now().isoformat()
+                })
+
                 return True
             else:
                 logger.warning(f"Ordine Entry non immediato: {parent_trade.orderStatus.status}")
-                # In un bracket, se l'entry non è fillata, lo stop non si attiva. 
-                # Possiamo lasciare correre o cancellare.
+                redis_publisher.log("warning", f"⚠️ Ordine non fillato: {parent_trade.orderStatus.status}")
+                redis_publisher.publish("order-placement", {
+                    "status": "failed",
+                    "reason": parent_trade.orderStatus.status
+                })
                 return False
 
         except Exception as e:
             logger.error(f"Errore Bracket Order: {e}")
+            redis_publisher.send_error(f"Errore apertura posizione: {str(e)}")
+            redis_publisher.publish("order-placement", {
+                "status": "error",
+                "error": str(e)
+            })
             return False
 
     def update_trailing_stop(self, df):
@@ -180,6 +223,7 @@ class ExecutionHandler:
             
             if not self.current_stop_order:
                 logger.warning("Posizione aperta ma nessun ordine Stop Loss tracciato in memoria.")
+                redis_publisher.log("warning", "⚠️ Stop loss non trovato in memoria, sync in corso...")
                 self.sync_position_state()
                 return False
             
@@ -188,6 +232,7 @@ class ExecutionHandler:
 
             if atr_value <= 0:
                 logger.error("ATR < 0, impossibile aggiornare lo stop loss")
+                redis_publisher.send_error("ATR < 0, impossibile aggiornare lo stop loss")
                 return False
             
             risk_per_share = atr_value * self.atr_multiplier
@@ -196,6 +241,7 @@ class ExecutionHandler:
             
             if new_stop_price <= self.stop_price:
                 logger.debug(f"Nuovo stop ${new_stop_price:.2f} non migliore dell'attuale ${self.stop_price:.2f}")
+                redis_publisher.log("success", f"Nuovo stop ${new_stop_price:.2f} non migliore dell'attuale ${self.stop_price:.2f}")
                 return False
             
             self.current_stop_order.auxPrice = new_stop_price
@@ -208,11 +254,13 @@ class ExecutionHandler:
             self.stop_price = new_stop_price
             
             logger.info(f"📈 Stop Loss aggiornato: ${old_stop:.2f} → ${new_stop_price:.2f}")
+            redis_publisher.log("success", f"📈 TRAILING STOP: ${old_stop:.2f} → ${new_stop_price:.2f} (+${new_stop_price - old_stop:.2f})")
             
             return True
             
         except Exception as e:
             logger.error(f"Errore nell'aggiornamento dello stop loss: {e}")
+            redis_publisher.send_error(f"Errore aggiornamento stop: {str(e)}")
             return False
         
     def close_position(self):
@@ -225,6 +273,7 @@ class ExecutionHandler:
             # Cancella lo stop loss
             if self.current_stop_order:
                 self.ib.cancelOrder(self.current_stop_order)
+                redis_publisher.log("info", "❌ Stop loss cancellato")
             
             # Piazza ordine market di chiusura
             close_order = MarketOrder('SELL', self.position_size)
@@ -239,6 +288,26 @@ class ExecutionHandler:
                 
                 logger.info(f"✅ Posizione chiusa @ ${exit_price:.2f}")
                 logger.info(f"💰 P&L: ${pnl:.2f} ({pnl/self.capital*100:.2f}%)")
+
+                # Invia risultato trade alla dashboard
+                redis_publisher.log("success", f"✅ POSIZIONE CHIUSA @ ${exit_price:.2f} - P&L: ${pnl:.2f})")
+                
+                redis_publisher.publish("position-closed", {
+                    "symbol": SYMBOL,
+                    "shares": self.position_size,
+                    "entry_price": self.entry_price,
+                    "exit_price": exit_price,
+                    "pnl": pnl,
+                    "result": "WIN" if pnl > 0 else "LOSS"
+                })
+                
+                redis_publisher.publish("trade-result", {
+                    "pnl": pnl,
+                    "entry": self.entry_price,
+                    "exit": exit_price,
+                    "shares": self.position_size,
+                    "duration_minutes": 0  # Potresti calcolare la durata reale
+                })
                 
                 # Reset tracking
                 self.current_position = None
@@ -250,11 +319,13 @@ class ExecutionHandler:
                 return True
             
             logger.error(f"Chiusura fallita: {trade.orderStatus.status}")
+            redis_publisher.send_error(f"Chiusura posizione fallita: {trade.orderStatus.status}")
 
             return False
             
         except Exception as e:
             logger.error(f"Errore nella chiusura posizione: {e}")
+            redis_publisher.send_error(f"Errore chiusura: {str(e)}")
             return False
         
     def has_position(self):
@@ -273,7 +344,17 @@ class ExecutionHandler:
         
         for item in portfolio:
             if item.contract.symbol == SYMBOL:
-                return item.unrealizedPnL
+                pnl = item.unrealizedPnL
+                
+                # Invia P&L corrente
+                redis_publisher.publish("current-pnl", {
+                    "symbol": SYMBOL,
+                    "unrealized_pnl": pnl,
+                    "position_size": self.position_size,
+                    "entry_price": self.entry_price
+                })
+                
+                return pnl
         
         return 0.0
     
@@ -292,13 +373,18 @@ class ExecutionHandler:
                 
                 for item in portfolio:
                     if item.contract.symbol == SYMBOL:
-                        return {
+                        info = {
                             'shares': position.position,
                             'avg_cost': position.avgCost,
                             'market_value': item.marketValue,
                             'unrealized_pnl': item.unrealizedPnL,
                             'realized_pnl': item.realizedPNL
                         }
+                        
+                        # Invia info posizione
+                        redis_publisher.publish("position-info", info)
+                        
+                        return info
         
         return None
 
@@ -319,16 +405,28 @@ class ExecutionHandler:
                     break
             
             if net_liquidation_value is not None:
+                old_capital = self.capital
                 self.capital = net_liquidation_value
                 logger.info(f"Capitale aggiornato con successo: ${self.capital:,.2f}")
+                redis_publisher.log("success", f"✅ Capitale aggiornato: ${self.capital:,.2f} (variazione: ${self.capital - old_capital:+,.2f})")
+
+                redis_publisher.publish("capital-update", {
+                    "old_capital": old_capital,
+                    "new_capital": self.capital,
+                    "change": self.capital - old_capital,
+                    "currency": "EUR"
+                })
+
                 return True
             else:
                 logger.error("Impossibile trovare il valore 'NetLiquidation' nei dati del conto.")
-                # Fallback: non aggiornare e usare il valore precedente
+                redis_publisher.log("error", "❌ NetLiquidation non trovato nei dati del conto")
+                redis_publisher.send_error("Impossibile aggiornare capitale: NetLiquidation non trovato")
                 return False
 
         except Exception as e:
             logger.error(f"Errore durante l'aggiornamento del capitale: {e}")
+            redis_publisher.send_error(f"Errore aggiornamento capitale: {str(e)}")
             return False
         
     def sync_position_state(self):
@@ -337,6 +435,12 @@ class ExecutionHandler:
         """
         try:
             logger.info("🔄 Sincronizzazione stato posizioni...")
+            redis_publisher.log("info", "🔄 Sincronizzazione posizioni con IB...")
+            
+            redis_publisher.publish("sync-status", {
+                "status": "syncing",
+                "timestamp": pd.Timestamp.now().isoformat()
+            })
             
             # 1. Trova posizione
             positions = self.ib.positions()
@@ -348,6 +452,13 @@ class ExecutionHandler:
             
             if not target_pos:
                 logger.info("Nessuna posizione aperta su IB.")
+                redis_publisher.log("info", "✅ Nessuna posizione aperta rilevata")
+                
+                redis_publisher.publish("sync-status", {
+                    "status": "completed",
+                    "has_position": False
+                })
+
                 self.current_position = None
                 self.position_size = 0
                 return None
@@ -356,6 +467,7 @@ class ExecutionHandler:
             self.position_size = target_pos.position
             self.entry_price = target_pos.avgCost
             logger.info(f"Trovata posizione: {self.position_size} shares @ avg ${self.entry_price:.2f}")
+            redis_publisher.log("warning", f"⚠️ POSIZIONE ESISTENTE: {self.position_size} shares @ ${self.entry_price:.2f}")
             
             # 3. Trova stop order attivo
             # ib.openOrders() ritorna tutti gli ordini aperti
@@ -369,14 +481,158 @@ class ExecutionHandler:
                     self.current_stop_order = o
                     self.stop_price = o.auxPrice
                     logger.info(f"Trovato Stop Loss attivo: ID {o.orderId} @ ${o.auxPrice}")
+                    redis_publisher.log("success", f"✅ Stop Loss attivo trovato @ ${o.auxPrice:.2f}")
+
                     found_stop = True
                     break
             
             if not found_stop:
                 logger.warning("⚠️ ATTENZIONE: Posizione aperta SENZA Stop Loss rilevato!")
+                redis_publisher.log("error", "⚠️ ATTENZIONE: Posizione SENZA Stop Loss!")
+                redis_publisher.send_error("Posizione aperta senza protezione Stop Loss")
+                
+                redis_publisher.publish("risk-alert", {
+                    "type": "no_stop_loss",
+                    "position_size": self.position_size,
+                    "entry_price": self.entry_price,
+                    "risk": "unlimited"
+                })
             
             return {'shares': self.position_size}
             
         except Exception as e:
             logger.error(f"Errore sync: {e}")
+            redis_publisher.send_error(f"Errore sincronizzazione: {str(e)}")
+            
+            redis_publisher.publish("sync-status", {
+                "status": "error",
+                "error": str(e)
+            })
+            
             return None
+        
+    def place_stop_loss(self, stop_price):
+        """
+        Piazza un ordine di Stop Loss standalone per una posizione esistente.
+        Utile per ripristinare lo stop dopo la notte.
+        """
+        try:
+            # Verifica che ci sia una posizione reale su IB
+            positions = self.ib.positions()
+            current_share_count = 0
+            for p in positions:
+                if p.contract.symbol == SYMBOL:
+                    current_share_count = p.position
+                    break
+            
+            if current_share_count == 0:
+                logger.warning("Impossibile piazzare Stop Loss: Nessuna posizione aperta su IB.")
+                return False
+
+            # Aggiorna la size interna se necessario
+            self.position_size = current_share_count
+
+            logger.info(f"🛡️ Ripristino Stop Loss a ${stop_price:.2f} per {self.position_size} shares")
+            redis_publisher.log("info", f"🛡️ Ripristino Stop Loss a ${stop_price:.2f}")
+
+            # Crea l'ordine Stop
+            stop_order = StopOrder('SELL', self.position_size, stop_price)
+            
+            # Invia ordine
+            trade = self.ib.placeOrder(self.contract, stop_order)
+            
+            # Aggiorna stato interno
+            self.current_stop_order = stop_order
+            self.stop_price = stop_price
+            
+            # Log
+            logger.info(f"Stop Loss ripristinato con successo. ID: {trade.order.orderId}")
+            redis_publisher.log("success", f"✅ Stop Loss riattivato a ${stop_price:.2f}")
+            
+            redis_publisher.publish("order-placed", {
+                "type": "stop_loss_restore",
+                "price": stop_price,
+                "shares": self.position_size
+            })
+
+            return True
+
+        except Exception as e:
+            logger.error(f"Errore nel piazzare Stop Loss: {e}")
+            redis_publisher.send_error(f"Errore ripristino Stop Loss: {str(e)}")
+            return False
+        
+    def close_all_positions(self):
+        """
+        CHIUSURA DI EMERGENZA.
+        Cancella tutti gli ordini pendenti e chiude le posizioni a mercato.
+        """
+        logger.warning("🚨 ESECUZIONE CHIUSURA TOTALE (PANIC BUTTON) 🚨")
+        redis_publisher.log("warning", "🚨 CHIUSURA TOTALE AVVIATA")
+        
+        try:
+            # 1. Cancella tutti gli ordini aperti per questo simbolo
+            open_orders = self.ib.openOrders()
+            for order in open_orders:
+                if order.contract.symbol == SYMBOL:
+                    self.ib.cancelOrder(order)
+            
+            # Aspetta un attimo che le cancellazioni vengano processate
+            self.ib.sleep(0.5)
+
+            # 2. Ottieni la posizione reale attuale da IB
+            positions = self.ib.positions()
+            target_pos = None
+            
+            for p in positions:
+                if p.contract.symbol == SYMBOL and p.position != 0:
+                    target_pos = p
+                    break
+            
+            if not target_pos:
+                logger.info("Nessuna posizione trovata da chiudere.")
+                redis_publisher.log("info", "Nessuna posizione da chiudere.")
+                
+                # Pulizia variabili interne per sicurezza
+                self.current_position = None
+                self.current_stop_order = None
+                self.position_size = 0
+                return True
+
+            shares_to_close = abs(target_pos.position)
+            action = 'SELL' if target_pos.position > 0 else 'BUY' # Gestisce anche short se servisse
+            
+            logger.info(f"Closing {shares_to_close} shares via Market Order...")
+            
+            # 3. Invia ordine Market
+            close_order = MarketOrder(action, shares_to_close)
+            trade = self.ib.placeOrder(self.contract, close_order)
+            
+            self.ib.waitOnUpdate(trade, timeout=10)
+            
+            if trade.orderStatus.status == 'Filled':
+                fill_price = trade.orderStatus.avgFillPrice
+                logger.info(f"✅ Posizione liquidata totalmente a ${fill_price:.2f}")
+                redis_publisher.log("success", f"✅ LIQUIDAZIONE COMPLETATA @ ${fill_price:.2f}")
+                
+                # Reset totale stato interno
+                self.current_position = None
+                self.current_stop_order = None
+                self.entry_price = None
+                self.stop_price = None
+                self.position_size = 0
+                
+                redis_publisher.publish("position-closed", {
+                    "reason": "force_close",
+                    "exit_price": fill_price,
+                    "shares": shares_to_close
+                })
+                return True
+            else:
+                logger.error(f"Liquidazione non completata: {trade.orderStatus.status}")
+                return False
+
+        except Exception as e:
+            logger.error(f"Errore critical close_all_positions: {e}")
+            redis_publisher.send_error(f"Errore chiusura totale: {str(e)}")
+            return False
