@@ -7,6 +7,7 @@ import os
 import json
 from src.ib_connector import IBConnector
 from src.data_handler import DataHandler
+from src.database import DatabaseHandler
 from src.indicator_calculator import IndicatorCalculator
 from src.execution_handler import ExecutionHandler
 from src.ib_dashboard_handler import IBDashboardHandler
@@ -23,6 +24,7 @@ class TradingBot:
         self.data_handler = None
         self.indicator_calculator = None
         self.execution = None
+        self.db = None
 
         self.account_id = None
         self.pnl_stream = None
@@ -61,6 +63,7 @@ class TradingBot:
             self.data_handler = DataHandler(self.connector)
             self.indicator_calculator = IndicatorCalculator()
             self.execution = ExecutionHandler(self.connector, capital=25000)
+            self.db = DatabaseHandler()
 
             self.account_id = self.connector.ib.managedAccounts()[0]
             self.pnl_stream = self.connector.ib.reqPnL(self.account_id)
@@ -604,6 +607,17 @@ class TradingBot:
                         # Check 5 minute modulo (0, 5, 10, ...)
                         if now.minute % 5 == 0:
                             self.on_new_candle()
+                            
+                            # Update position data after candle processing if we have a position
+                            if self.execution.has_position():
+                                try:
+                                    df = self.db.get_latest_data(config.SYMBOL, 2)
+                                    if df is not None and not df.empty:
+                                        current_sma = df.iloc[-1].get('SMA_200', 0.0)
+                                        self.execution.broadcast_position_update(current_ema_value=current_sma)
+                                except Exception as e:
+                                    logger.error(f"Error broadcasting position update: {e}")
+                            
                             await asyncio.sleep(2)
 
                 # 3. Allow IBKR to do whatever it needs to do for 1 second

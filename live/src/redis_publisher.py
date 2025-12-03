@@ -102,28 +102,56 @@ class RedisPublisher:
             "gross_position_value": float(account_values.get('GrossPositionValue', 0)),
         }
         
-        self.publish("account-update", account_data)
+        self.publish("account_update", account_data)
         
     def send_position_update(self, positions: List[Dict[str, Any]]):
-        """Sends position update"""
+        """
+        Sends position update.
+        Handles both IB-style (position, avgCost) and Bot-style (shares, entry_price) formats.
+        """
         if not config.SEND_POSITIONS:
             return
             
         # Format positions for dashboard
         formatted_positions = []
         for pos in positions:
+            # 1. Normalize Quantity (shares vs position)
+            quantity = pos.get("shares", pos.get("position", 0))
+            
+            # 2. Normalize Entry Price (entry_price vs avgCost)
+            entry_price = pos.get("entry_price", pos.get("avgCost", 0))
+            
+            # 3. Normalize Market Price (current_price vs marketPrice)
+            market_price = pos.get("current_price", pos.get("marketPrice", 0))
+            
+            # 4. Normalize Market Value
+            market_value = pos.get("market_value", pos.get("marketValue", 0))
+            
+            # 5. Normalize PnL
+            unrealized_pnl = pos.get("unrealized_pnl", pos.get("unrealizedPNL", 0))
+            realized_pnl = pos.get("realized_pnl", pos.get("realizedPNL", 0))
+
             formatted_pos = {
                 "symbol": pos.get("symbol", ""),
-                "position": float(pos.get("position", 0)),
-                "avg_cost": float(pos.get("avgCost", 0)),
-                "market_price": float(pos.get("marketPrice", 0)),
-                "market_value": float(pos.get("marketValue", 0)),
-                "unrealized_pnl": float(pos.get("unrealizedPNL", 0)),
-                "realized_pnl": float(pos.get("realizedPNL", 0)),
+                "shares": quantity,          # Dashboard expects 'shares'
+                "position": quantity,        # Keep 'position' for backward compatibility
+                "entry_price": entry_price,  # Dashboard expects 'entry_price'
+                "avg_cost": entry_price,     # Keep 'avg_cost' for backward compatibility
+                "current_price": market_price,
+                "market_price": market_price,
+                "market_value": market_value,
+                "unrealized_pnl": unrealized_pnl,
+                "realized_pnl": realized_pnl,
+                
+                # Pass-through extra fields required by Dashboard
+                "current_stop": pos.get("current_stop"),
+                "current_trailing_stop": pos.get("current_trailing_stop"),
+                "current_sma_value": pos.get("current_sma_value"),
+                "timestamp": pos.get("timestamp", datetime.now().isoformat())
             }
             formatted_positions.append(formatted_pos)
         
-        self.publish("position-update", formatted_positions)
+        self.publish("position_update", formatted_positions)
         
     def send_order_update(self, order: Dict[str, Any]):
         """Sends order update"""
@@ -143,7 +171,7 @@ class RedisPublisher:
             "avg_fill_price": order.get("avgFillPrice"),
             "last_fill_time": order.get("lastFillTime"),
         }
-        self.publish("order-update", order_data)
+        self.publish("order_update", order_data)
         
     def send_pnl_update(self, daily_pnl: float, unrealized_pnl: float, realized_pnl: float):
         """Sends P&L update"""
@@ -156,7 +184,7 @@ class RedisPublisher:
             "realized_pnl": realized_pnl,
             "total_pnl": daily_pnl + unrealized_pnl + realized_pnl
         }
-        self.publish("pnl-update", pnl_data)
+        self.publish("pnl_update", pnl_data)
         
     def send_error(self, error_msg: str, error_code: Optional[int] = None, details: Optional[Dict] = None):
         """Sends error message"""
@@ -176,7 +204,7 @@ class RedisPublisher:
             "details": details,
             "timestamp": datetime.now().isoformat()
         }
-        self.publish("trade-signal", signal_data)
+        self.publish("trade_signal", signal_data)
         self.log("info", f"Signal: {signal_type} for {config.SYMBOL}", details)
     
     def _setup_command_listener(self):

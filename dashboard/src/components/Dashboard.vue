@@ -1,377 +1,323 @@
 <template>
-  <div class="min-h-screen bg-[#0A0E1A] text-gray-100 p-4 md:p-6">
+  <div class="min-h-screen bg-[#0A0E1A] text-gray-100 p-4 md:p-6 font-sans">
     <div class="max-w-[1600px] mx-auto space-y-6">
-      <!-- Header -->
-      <header class="flex items-center justify-between">
+
+      <!-- HEADER -->
+      <header class="flex items-center justify-between border-b border-[#2A3350] pb-4">
         <div>
-          <h1 class="text-3xl font-bold text-white mb-1 tracking-tight">
+          <h1 class="text-2xl font-bold text-white tracking-tight flex items-center gap-2">
+            <Activity class="text-[#00D9FF]" />
             Algo Trading Dashboard
           </h1>
-          <p class="text-sm text-[#00D9FF]">Real-time algorithmic trading monitor</p>
+          <p class="text-xs text-gray-400 mt-1">Real-time algorithmic trading monitor</p>
         </div>
-        <div
-          :class="[
-            'px-3 py-1 text-sm border-2 rounded-md inline-flex items-center',
-            connected
-              ? 'border-emerald-500 text-emerald-400 bg-emerald-500/10'
-              : 'border-red-500 text-red-400 bg-red-500/10'
-          ]"
-        >
-          <Activity class="w-3 h-3 mr-1" />
-          {{ connected ? 'CONNECTED' : 'DISCONNECTED' }}
+
+        <div class="flex items-center gap-4">
+          <!-- Connection Status -->
+          <div
+            :class="['px-3 py-1 text-xs font-bold rounded-full border',
+              connected ? 'bg-emerald-500/10 border-emerald-500 text-emerald-400' : 'bg-red-500/10 border-red-500 text-red-400']">
+            {{ connected ? 'LIVE FEED' : 'OFFLINE' }}
+          </div>
         </div>
       </header>
 
-      <!-- Stats Grid -->
-      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        <!-- Current P&L -->
-        <div
-          class="bg-gradient-to-br from-[#1A1F35] to-[#0F1421] border border-[#2A3350] rounded-lg p-5"
-        >
-          <div class="flex items-start justify-between mb-3">
-            <div class="p-2 rounded-lg bg-[#00D9FF]/10">
-              <DollarSign class="w-5 h-5 text-[#00D9FF]" />
-            </div>
-            <TrendingUp v-if="dailyPnl >= 0" class="w-5 h-5 text-emerald-400" />
-            <TrendingDown v-else class="w-5 h-5 text-red-400" />
-          </div>
-          <div class="space-y-1">
-            <p class="text-xs text-gray-400 font-medium uppercase tracking-wide">
-              Daily P&L
-            </p>
-            <p :class="['text-2xl font-bold', dailyPnl >= 0 ? 'text-emerald-400' : 'text-red-400']">
-              ${{ dailyPnl.toFixed(2) }}
-            </p>
-          </div>
+      <!-- KPI CARDS (Miste: Live WS + Stats API) -->
+      <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <!-- 1. Net Liquidation (WS) -->
+        <div class="bg-[#131722] border border-[#2A3350] rounded-lg p-4">
+          <p class="text-gray-400 text-xs uppercase font-semibold">Net Liquidation</p>
+          <p class="text-2xl font-bold text-white mt-1">${{ formatMoney(accountInfo.net_liquidation) }}</p>
         </div>
 
-        <!-- Net Liquidation -->
-        <div
-          class="bg-gradient-to-br from-[#1A1F35] to-[#0F1421] border border-[#2A3350] rounded-lg p-5"
-        >
-          <div class="flex items-start justify-between mb-3">
-            <div class="p-2 rounded-lg bg-purple-500/10">
-              <TrendingUp class="w-5 h-5 text-purple-400" />
-            </div>
-          </div>
-          <div class="space-y-1">
-            <p class="text-xs text-gray-400 font-medium uppercase tracking-wide">Net Liquidation</p>
-            <p class="text-2xl font-bold text-white">
-              ${{ netLiquidation.toFixed(2) }}
-            </p>
-          </div>
+        <!-- 2. Daily PnL (WS) -->
+        <div class="bg-[#131722] border border-[#2A3350] rounded-lg p-4">
+          <p class="text-gray-400 text-xs uppercase font-semibold">Daily P&L</p>
+          <p :class="['text-2xl font-bold mt-1', getPnlColor(accountInfo.daily_pnl)]">
+            ${{ formatMoney(accountInfo.daily_pnl) }}
+          </p>
         </div>
 
-        <!-- Positions -->
-        <div
-          class="bg-gradient-to-br from-[#1A1F35] to-[#0F1421] border border-[#2A3350] rounded-lg p-5"
-        >
-          <div class="flex items-start justify-between mb-3">
-            <div class="p-2 rounded-lg bg-emerald-500/10">
-              <Zap class="w-5 h-5 text-emerald-400" />
-            </div>
-          </div>
-          <div class="space-y-1">
-            <p class="text-xs text-gray-400 font-medium uppercase tracking-wide">Open Positions</p>
-            <p class="text-2xl font-bold text-white">{{ positions.length }}</p>
-          </div>
+        <!-- 3. Win Rate (API Stats) -->
+        <div class="bg-[#131722] border border-[#2A3350] rounded-lg p-4">
+          <p class="text-gray-400 text-xs uppercase font-semibold">Win Rate</p>
+          <p class="text-2xl font-bold text-[#00D9FF] mt-1">{{ stats.win_rate_percent }}%</p>
+          <p class="text-xs text-gray-500">{{ stats.total_trades }} Trades Total</p>
         </div>
 
-        <!-- Buying Power -->
-        <div
-          class="bg-gradient-to-br from-[#1A1F35] to-[#0F1421] border border-[#2A3350] rounded-lg p-5"
-        >
-          <div class="flex items-start justify-between mb-3">
-            <div class="p-2 rounded-lg bg-amber-500/10">
-              <Activity class="w-5 h-5 text-amber-400" />
-            </div>
-          </div>
-          <div class="space-y-1">
-            <p class="text-xs text-gray-400 font-medium uppercase tracking-wide">Buying Power</p>
-            <p class="text-2xl font-bold text-white">
-              ${{ buyingPower.toFixed(2) }}
-            </p>
-          </div>
+        <!-- 4. Total PnL (API Stats) -->
+        <div class="bg-[#131722] border border-[#2A3350] rounded-lg p-4">
+          <p class="text-gray-400 text-xs uppercase font-semibold">Total Profit</p>
+          <p :class="['text-2xl font-bold mt-1', getPnlColor(stats.total_pnl_dollar)]">
+            ${{ formatMoney(stats.total_pnl_dollar) }}
+          </p>
         </div>
       </div>
 
-      <!-- Main Content Grid -->
       <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <!-- Positions Table - 2 columns -->
-        <div
-          class="lg:col-span-2 bg-gradient-to-br from-[#1A1F35] to-[#0F1421] border border-[#2A3350] rounded-lg p-6"
-        >
-          <div class="mb-4">
-            <h2 class="text-lg font-semibold text-white mb-1">Active Positions</h2>
-            <p class="text-xs text-gray-400">Current open positions</p>
-          </div>
-          
-          <!-- Positions List -->
-          <div v-if="positions.length > 0" class="space-y-2">
-            <div v-for="pos in positions" :key="pos.symbol" 
-                 class="bg-[#0A0E1A]/50 rounded-lg p-3 border border-[#2A3350]/50">
-              <div class="flex justify-between items-center">
-                <div>
-                  <p class="text-white font-semibold">{{ pos.symbol }}</p>
-                  <p class="text-xs text-gray-400">
-                    {{ pos.position }} shares @ ${{ pos.avgCost?.toFixed(2) }}
-                  </p>
+
+        <!-- LEFT COLUMN: Live Action -->
+        <div class="lg:col-span-2 space-y-6">
+
+          <!-- LIVE ACTIVE POSITION CARD -->
+          <div v-if="activePosition && activePosition.symbol"
+            class="bg-gradient-to-br from-[#1A1F35] to-[#0F1421] border border-[#00D9FF]/30 rounded-xl p-6 relative overflow-hidden">
+            <!-- Background pulse effect -->
+            <div class="absolute top-0 right-0 w-32 h-32 bg-[#00D9FF]/5 rounded-full blur-3xl -mr-10 -mt-10"></div>
+
+            <div class="flex justify-between items-start mb-6">
+              <div>
+                <div class="flex items-center gap-3">
+                  <h2 class="text-3xl font-bold text-white">{{ activePosition.symbol }}</h2>
+                  <span class="px-2 py-1 bg-[#00D9FF]/20 text-[#00D9FF] text-xs font-bold rounded">LONG</span>
                 </div>
-                <div class="text-right">
-                  <p :class="[
-                    'font-semibold',
-                    pos.unrealizedPNL >= 0 ? 'text-emerald-400' : 'text-red-400'
-                  ]">
-                    ${{ dailyPnl?.toFixed(2) || '0.00' }}
-                  </p>
-                  <p class="text-xs text-gray-400">Unrealized P&L</p>
-                </div>
+                <p class="text-gray-400 text-sm mt-1">
+                  {{ activePosition.shares }} shares @ ${{ activePosition.entry_price?.toFixed(2) }}
+                </p>
+              </div>
+              <div class="text-right">
+                <p class="text-sm text-gray-400 uppercase">Unrealized P&L</p>
+                <p :class="['text-4xl font-bold tracking-tighter', getPnlColor(activePosition.unrealized_pnl)]">
+                  ${{ formatMoney(activePosition.unrealized_pnl) }}
+                </p>
+              </div>
+            </div>
+
+            <!-- Strategy Monitors Grid -->
+            <div class="grid grid-cols-3 gap-4 mb-4">
+              <!-- Current Price -->
+              <div class="bg-[#0A0E1A]/50 p-3 rounded border border-gray-700">
+                <p class="text-xs text-gray-500 mb-1">Current Price</p>
+                <p class="text-xl font-mono text-white">${{ activePosition.current_price?.toFixed(2) }}</p>
+              </div>
+
+              <!-- Trailing Stop Monitor -->
+              <div class="bg-[#0A0E1A]/50 p-3 rounded border border-gray-700 relative">
+                <p class="text-xs text-gray-500 mb-1">Trailing Stop</p>
+                <p class="text-xl font-mono text-amber-400">${{ activePosition.current_trailing_stop?.toFixed(2) ||
+                  '---' }}</p>
+                <!-- Distance bar could go here -->
+              </div>
+
+              <!-- EMA Monitor -->
+              <div class="bg-[#0A0E1A]/50 p-3 rounded border border-gray-700">
+                <p class="text-xs text-gray-500 mb-1">EMA Value</p>
+                <p class="text-xl font-mono text-purple-400">${{ activePosition.current_sma_value?.toFixed(2) || '---'
+                  }}</p>
               </div>
             </div>
           </div>
-          
-          <!-- No Positions -->
-          <div v-else 
-               class="h-[200px] flex items-center justify-center bg-[#0A0E1A]/50 rounded-lg border border-[#2A3350]/50">
-            <div class="text-center space-y-2">
-              <Activity class="w-12 h-12 text-gray-600 mx-auto" />
-              <p class="text-sm text-gray-500">No open positions</p>
+
+          <!-- NO POSITION / SCANNING STATE -->
+          <div v-else
+            class="bg-[#131722] border border-[#2A3350] border-dashed rounded-xl p-10 flex flex-col items-center justify-center text-center h-[280px]">
+            <div class="w-16 h-16 bg-[#0A0E1A] rounded-full flex items-center justify-center mb-4 relative">
+              <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#00D9FF] opacity-20"></span>
+              <Activity class="text-[#00D9FF] w-8 h-8" />
+            </div>
+            <h3 class="text-xl font-semibold text-white">Scanning Market...</h3>
+            <p class="text-gray-500 mt-2 max-w-md">The bot is monitoring <span class="text-[#00D9FF] font-mono">{{
+              latestPrice.symbol || '---' }}</span> ($ {{ latestPrice.price.toFixed(2) }}) for SMA Crossover signals.
+            </p>
+          </div>
+
+          <!-- RECENT HISTORY TABLE (From API) -->
+          <div class="bg-[#131722] border border-[#2A3350] rounded-lg overflow-hidden">
+            <div class="p-4 border-b border-[#2A3350] flex justify-between items-center">
+              <h3 class="font-semibold text-white">Recent Trade History</h3>
+              <button @click="fetchHistory" class="text-xs text-[#00D9FF] hover:text-white transition-colors">
+                Refresh
+              </button>
+            </div>
+
+            <div class="overflow-x-auto">
+              <table class="w-full text-left text-sm text-gray-400">
+                <thead class="bg-[#0A0E1A] text-xs uppercase font-medium">
+                  <tr>
+                    <th class="px-4 py-3">Symbol</th>
+                    <th class="px-4 py-3">Date</th>
+                    <th class="px-4 py-3 text-right">Qty</th>
+                    <th class="px-4 py-3 text-right">PnL $</th>
+                    <th class="px-4 py-3 text-center">Exit Reason</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-[#2A3350]">
+                  <tr v-for="trade in tradeHistory" :key="trade.id" class="hover:bg-[#1A1F35] transition-colors">
+                    <td class="px-4 py-3 font-medium text-white">{{ trade.symbol }}</td>
+                    <td class="px-4 py-3">{{ formatDate(trade.exit_time) }}</td>
+                    <td class="px-4 py-3 text-right">{{ trade.quantity }}</td>
+                    <td :class="['px-4 py-3 text-right font-bold', getPnlColor(trade.pnl_dollar)]">
+                      ${{ trade.pnl_dollar.toFixed(2) }}
+                    </td>
+                    <td class="px-4 py-3 text-center">
+                      <span class="px-2 py-1 rounded text-[10px] font-bold bg-gray-700 text-gray-300">
+                        {{ trade.exit_reason }}
+                      </span>
+                    </td>
+                  </tr>
+                  <tr v-if="tradeHistory.length === 0">
+                    <td colspan="5" class="px-4 py-8 text-center text-gray-600">No trades recorded yet.</td>
+                  </tr>
+                </tbody>
+              </table>
             </div>
           </div>
         </div>
 
-        <!-- Emergency Controls - 1 column -->
-        <div
-          class="bg-gradient-to-br from-[#1A1F35] to-[#0F1421] border border-[#2A3350] rounded-lg p-6"
-        >
-          <div class="mb-4">
-            <h2 class="text-lg font-semibold text-white mb-1">Controls</h2>
-            <p class="text-xs text-gray-400">Trading system controls</p>
-          </div>
-          <div class="space-y-3">
-            <button
-              @click="handlePause"
-              :disabled="!connected"
-              class="w-full bg-amber-500 hover:bg-amber-600 text-white font-medium h-12 rounded-md transition-colors duration-200 flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <Pause v-if="isRunning" class="w-4 h-4 mr-2" />
-              <Play v-else class="w-4 h-4 mr-2" />
-              {{ isRunning ? 'Pause Bot' : 'Resume Bot' }}
-            </button>
+        <!-- RIGHT COLUMN: Logs & Controls -->
+        <div class="space-y-6">
 
-            <button
-              @click="handleEmergencyStop"
-              :disabled="!connected"
-              class="w-full bg-red-500 hover:bg-red-600 text-white font-medium h-12 rounded-md transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
-            >
-              <AlertTriangle class="w-4 h-4 mr-2" />
-              Emergency Stop
-            </button>
+          <!-- SYSTEM LOGS (Live WS) -->
+          <div class="bg-[#131722] border border-[#2A3350] rounded-lg flex flex-col h-[500px]">
+            <div class="p-3 border-b border-[#2A3350] flex justify-between items-center bg-[#0A0E1A]">
+              <span class="text-xs font-bold text-gray-300 uppercase">Live Terminal</span>
+              <div class="flex gap-2">
+                <div class="w-2 h-2 rounded-full bg-red-500 animate-pulse" v-if="connected"></div>
+              </div>
+            </div>
 
-            <button
-              @click="handleForceUpdate"
-              :disabled="!connected"
-              class="w-full bg-blue-500 hover:bg-blue-600 text-white font-medium h-12 rounded-md transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
-            >
-              <TrendingUp class="w-4 h-4 mr-2" />
-              Force Update
-            </button>
-
-            <div class="pt-4 mt-4 border-t border-[#2A3350]">
-              <div class="space-y-2 text-xs">
-                <div class="flex justify-between">
-                  <span class="text-gray-400">Bot Status</span>
-                  <span :class="[
-                    isRunning ? 'text-emerald-400' : 'text-amber-400'
-                  ]">
-                    {{ botStatus }}
-                  </span>
-                </div>
-                <div class="flex justify-between">
-                  <span class="text-gray-400">WebSocket</span>
-                  <span :class="[
-                    connected ? 'text-emerald-400' : 'text-red-400'
-                  ]">
-                    {{ connected ? 'Connected' : error || 'Disconnected' }}
-                  </span>
-                </div>
-                <div class="flex justify-between">
-                  <span class="text-gray-400">Last Update</span>
-                  <span class="text-gray-300">{{ currentTime }}</span>
-                </div>
+            <div ref="logsContainer" class="flex-1 overflow-y-auto p-3 font-mono text-xs space-y-1 custom-scrollbar">
+              <div v-for="log in logs" :key="log.id" class="leading-relaxed break-all">
+                <span class="text-gray-600 mr-2">[{{ log.timestamp }}]</span>
+                <span :class="{
+                  'text-[#00D9FF]': log.level === 'info',
+                  'text-amber-400': log.level === 'warning',
+                  'text-red-400': log.level === 'error',
+                  'text-emerald-400': log.level === 'success',
+                  'text-gray-400': log.level === 'debug'
+                }">{{ log.message }}</span>
               </div>
             </div>
           </div>
-        </div>
-      </div>
 
-      <!-- Terminal Logs -->
-      <div
-        class="bg-gradient-to-br from-[#1A1F35] to-[#0F1421] border border-[#2A3350] rounded-lg p-6"
-      >
-        <div class="mb-4 flex items-center justify-between">
-          <div>
-            <h2 class="text-lg font-semibold text-white mb-1">Live Terminal</h2>
-            <p class="text-xs text-gray-400">Real-time trading activity logs</p>
+          <!-- BOT CONTROLS -->
+          <div class="bg-[#131722] border border-[#2A3350] rounded-lg p-4">
+            <h3 class="text-sm font-bold text-white mb-4">Manual Override</h3>
+            <div class="grid grid-cols-2 gap-3">
+              <button @click="sendCommand('stop')"
+                class="bg-red-500/10 hover:bg-red-500/20 text-red-500 border border-red-500/50 p-3 rounded transition flex flex-col items-center justify-center gap-1">
+                <AlertTriangle class="w-4 h-4" />
+                <span class="text-xs font-bold">EMERGENCY STOP</span>
+              </button>
+
+              <button @click="sendCommand('close_positions')"
+                class="bg-amber-500/10 hover:bg-amber-500/20 text-amber-500 border border-amber-500/50 p-3 rounded transition flex flex-col items-center justify-center gap-1">
+                <XCircle class="w-4 h-4" />
+                <span class="text-xs font-bold">CLOSE ALL</span>
+              </button>
+            </div>
           </div>
-          <button
-            @click="clearLogs"
-            class="text-xs text-gray-400 hover:text-white px-3 py-1 rounded hover:bg-white/5 transition-colors"
-          >
-            Clear Logs
-          </button>
+
         </div>
 
-        <div
-          ref="logContainer"
-          class="bg-[#0A0E1A] rounded-lg p-4 h-[300px] overflow-y-auto font-mono text-xs space-y-1 custom-scrollbar"
-        >
-          <p v-if="logs.length === 0" class="text-gray-600">Waiting for trading signals...</p>
-          <div v-else v-for="log in logs" :key="log.id" class="flex gap-3 py-1">
-            <span class="text-gray-500 flex-shrink-0">[{{ log.timestamp }}]</span>
-            <span
-              :class="{
-                'text-emerald-400': log.level === 'success',
-                'text-red-400': log.level === 'error',
-                'text-amber-400': log.level === 'warning',
-                'text-[#00D9FF]': log.level === 'info',
-                'text-gray-400': log.level === 'debug'
-              }"
-                          >
-              {{ log.message }}
-            </span>
-          </div>
-        </div>
       </div>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
-import { useWebSocket } from '@/composables/useWebSocket'
-import {
-  Activity,
-  TrendingUp,
-  TrendingDown,
-  DollarSign,
-  Zap,
-  AlertTriangle,
-  Pause,
-  Play
-} from 'lucide-vue-next'
+  import { ref, onMounted, nextTick, watch } from 'vue'
+  import { useWebSocket } from '@/composables/useWebSocket'
+  import { Activity, AlertTriangle, XCircle } from 'lucide-vue-next'
 
-// WebSocket connection
-const {
-  connected,
-  error,
-  accountInfo,
-  positions,
-  pnl,
-  logs,
-  systemStatus,
-  pauseBot,
-  resumeBot,
-  stopBot,
-  forceUpdate
-} = useWebSocket()
+  // --- COMPOSABLE (WebSocket Data) ---
+  const {
+    connected,
+    accountInfo,
+    activePosition,
+    latestPrice,
+    logs,
+    sendCommand
+  } = useWebSocket()
 
-// Local state
-const logContainer = ref(null)
-const isRunning = ref(false)
-const botStatus = ref('Unknown')
+  // --- LOCAL STATE (API Data) ---
+  const tradeHistory = ref([])
+  const stats = ref({
+    total_trades: 0,
+    win_rate_percent: 0,
+    total_pnl_dollar: 0,
+  })
 
-// Computed values from WebSocket data
-const dailyPnl = computed(() => pnl.value?.daily_pnl || 0)
-const netLiquidation = computed(() => accountInfo.value?.net_liquidation || 0)
-const buyingPower = computed(() => accountInfo.value?.buying_power || 0)
-const currentTime = computed(() => new Date().toLocaleTimeString())
+  const logsContainer = ref(null)
 
-// Watch for system status changes
-watch(systemStatus, (newStatus) => {
-  if (newStatus) {
-    isRunning.value = newStatus.bot_status === 'running'
-    botStatus.value = newStatus.bot_status?.toUpperCase() || 'UNKNOWN'
+  // --- API METHODS ---
+  const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+
+  const fetchHistory = async () => {
+    try {
+      const res = await fetch(`${API_URL}/api/history?limit=10`)
+      const json = await res.json()
+      tradeHistory.value = json.data
+    } catch (e) {
+      console.error("Failed to fetch history", e)
+    }
   }
-}, { deep: true })
 
-// Auto-scroll logs
-watch(logs, async () => {
-  await nextTick()
-  if (logContainer.value) {
-    logContainer.value.scrollTop = logContainer.value.scrollHeight
+  const fetchStats = async () => {
+    try {
+      const res = await fetch(`${API_URL}/api/stats`)
+      stats.value = await res.json()
+    } catch (e) {
+      console.error("Failed to fetch stats", e)
+    }
   }
-}, { deep: true })
 
-// Control handlers
-const handlePause = async () => {
-  if (isRunning.value) {
-    await pauseBot()
-    isRunning.value = false
-    botStatus.value = 'PAUSED'
-  } else {
-    await resumeBot()
-    isRunning.value = true
-    botStatus.value = 'RUNNING'
+  // --- UTILS ---
+  const formatMoney = (val) => (val || 0).toFixed(2)
+
+  const getPnlColor = (val) => {
+    if (!val) return 'text-gray-400'
+    return val >= 0 ? 'text-emerald-400' : 'text-red-400'
   }
-}
 
-const handleEmergencyStop = async () => {
-  if (confirm('Are you sure you want to execute an emergency stop? This will stop the bot completely.')) {
-    await stopBot()
-    isRunning.value = false
-    botStatus.value = 'STOPPED'
+  const formatDate = (isoString) => {
+    if (!isoString) return ''
+    return new Date(isoString).toLocaleString('en-US', {
+      month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
+    })
   }
-}
 
-const handleForceUpdate = async () => {
-  await forceUpdate()
-}
+  // --- LIFECYCLE & WATCHERS ---
 
-const clearLogs = () => {
-  logs.value = []
-}
+  // Auto-scroll logs
+  watch(logs, async () => {
+    await nextTick()
+    if (logsContainer.value) {
+      logsContainer.value.scrollTop = logsContainer.value.scrollHeight
+    }
+  }, { deep: true })
 
-// Update timer for current time
-let timeInterval = null
+  onMounted(() => {
+    // Load initial "Cold Data"
+    fetchHistory()
+    fetchStats()
 
-onMounted(() => {
-  // Force time update every second
-  timeInterval = setInterval(() => {
-    // This will trigger the computed property to update
-  }, 1000)
-})
+    // Refresh stats periodically (every 1 min) just in case
+    setInterval(() => {
+      fetchStats()
+      fetchHistory() // Update table if a trade closed
+    }, 60000)
+  })
 
-onUnmounted(() => {
-  if (timeInterval) {
-    clearInterval(timeInterval)
-  }
-})
 </script>
 
 <style scoped>
-/* Custom scrollbar styling for terminal logs */
-.custom-scrollbar::-webkit-scrollbar {
-  width: 8px;
-}
 
-.custom-scrollbar::-webkit-scrollbar-track {
-  background: rgba(42, 51, 80, 0.3);
-  border-radius: 4px;
-}
+  /* Scrollbar Customization */
+  .custom-scrollbar::-webkit-scrollbar {
+    width: 6px;
+  }
 
-.custom-scrollbar::-webkit-scrollbar-thumb {
-  background: rgba(0, 217, 255, 0.3);
-  border-radius: 4px;
-}
+  .custom-scrollbar::-webkit-scrollbar-track {
+    background: #0A0E1A;
+  }
 
-.custom-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: rgba(0, 217, 255, 0.5);
-}
+  .custom-scrollbar::-webkit-scrollbar-thumb {
+    background: #2A3350;
+    border-radius: 3px;
+  }
 
-/* Firefox scrollbar */
-.custom-scrollbar {
-  scrollbar-width: thin;
-  scrollbar-color: rgba(0, 217, 255, 0.3) rgba(42, 51, 80, 0.3);
-}
+  .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: #3B4768;
+  }
 </style>

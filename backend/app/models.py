@@ -3,16 +3,18 @@ from typing import Optional, List, Dict, Any
 from datetime import datetime
 from enum import Enum
 
+# ====================
+# Enums
+# ====================
+
 class MessageType(str, Enum):
-    """Supported message types"""
-    ACCOUNT_UPDATE = "account-update"
-    POSITION_UPDATE = "position-update"
-    ORDER_UPDATE = "order-update"
-    PNL_UPDATE = "pnl-update"
-    LOG = "log"
-    ERROR = "error"
-    HEARTBEAT = "heartbeat"
-    INITIAL_STATE = "initial-state"
+    """Supported message types for WebSocket/Redis"""
+    PRICE_UPDATE = "price_update"       # Alta frequenza (Ticker)
+    POSITION_UPDATE = "position_update" # Cambio stato posizione
+    ACCOUNT_UPDATE = "account_update"   # Cambio liquidità
+    LOG = "log"                         # Messaggi operativi
+    INITIAL_STATE = "initial-state"     # Snapshot all'avvio
+    COMMAND = "command"                 # Dal frontend al bot
 
 class LogLevel(str, Enum):
     DEBUG = "debug"
@@ -21,45 +23,80 @@ class LogLevel(str, Enum):
     ERROR = "error"
     CRITICAL = "critical"
 
+class ExitReason(str, Enum):
+    """Reasons for exiting a trade"""
+    TRAILING_STOP = "TRAILING_STOP"
+    SMA_CROSS = "SMA_CROSS"
+
+# ====================
+# Real-Time Payload Models (WebSocket)
+# ====================
+
+class TickerUpdate(BaseModel):
+    """Lightweight price update"""
+    symbol: str
+    price: float
+    change_percent: float = 0.0
+
+class AccountInfo(BaseModel):
+    """Essential account info"""
+    net_liquidation: float          # Valore totale (Cash + Posizioni)
+    daily_pnl: Optional[float] = 0.0
+    # Rimosso buying_power e total_cash come richiesto
+
+class Position(BaseModel):
+    """Active position details with Strategy Indicators"""
+    symbol: str
+    shares: int                     # Quantità
+    entry_price: float
+    current_price: float            # Prezzo attuale per calcolo PnL UI
+    unrealized_pnl: float
+    
+    # Campi specifici della tua strategia (Cruciali per la Dashboard)
+    current_trailing_stop: Optional[float] = None
+    current_sma_value: Optional[float] = None
+    
+    # Campo calcolato opzionale (es. quanto manca allo stop in %)
+    distance_to_stop_pct: Optional[float] = None
+
 class LogMessage(BaseModel):
     level: LogLevel
     message: str
     timestamp: str
     details: Optional[Dict[str, Any]] = None
 
-class AccountInfo(BaseModel):
-    net_liquidation: Optional[float] = 0
-    buying_power: Optional[float] = 0
-    total_cash: Optional[float] = 0
-    daily_pnl: Optional[float] = 0
-    timestamp: Optional[datetime] = None
+# ====================
+# Database Models (History & API)
+# ====================
 
-class Position(BaseModel):
+class Trade(BaseModel):
+    """Completed trade record (Matches DB)"""
+    id: Optional[int] = None
     symbol: str
-    position: float
-    avg_cost: float
-    market_value: float
-    unrealized_pnl: float
-    realized_pnl: Optional[float] = 0
+    entry_price: float
+    exit_price: float
+    quantity: int
+    entry_time: datetime
+    exit_time: datetime
+    pnl_dollar: float
+    pnl_percent: float
+    exit_reason: ExitReason
 
-class Order(BaseModel):
-    order_id: int
-    symbol: str
-    action: str  # BUY/SELL
-    quantity: float
-    status: str
-    filled: float
-    remaining: float
-    avg_fill_price: Optional[float] = None
-    timestamp: Optional[datetime] = None
+class TradeStats(BaseModel):
+    """Aggregated Performance Metrics"""
+    total_trades: int
+    win_rate_percent: float
+    total_pnl_dollar: float
+    avg_win_dollar: float
+    avg_loss_dollar: float
+    max_drawdown_dollar: float
+    max_drawdown_percent: float
 
-class PnLUpdate(BaseModel):
-    daily_pnl: float
-    unrealized_pnl: float
-    realized_pnl: float
-    total_pnl: Optional[float] = None
+# ====================
+# WebSocket Wrapper
+# ====================
 
 class WebSocketMessage(BaseModel):
     type: MessageType
-    payload: Dict[str, Any]
+    payload: Dict[str, Any] # Può contenere uno dei modelli sopra (convertito in dict)
     timestamp: str

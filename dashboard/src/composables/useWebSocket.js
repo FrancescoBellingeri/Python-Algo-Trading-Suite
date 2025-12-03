@@ -9,207 +9,143 @@ export function useWebSocket(url = DEFAULT_WS_URL) {
   const connected = ref(false);
   const error = ref(null);
 
-  // Trading data
-  const accountInfo = ref({});
-  const positions = ref([]);
-  const pnl = ref({});
+  // Real-time Data
+  const accountInfo = ref({
+    net_liquidation: 0,
+    daily_pnl: 0,
+  });
+
+  const activePosition = ref(null); // Oggetto singolo o null
+
+  const latestPrice = ref({
+    symbol: "---",
+    price: 0,
+    change_percent: 0,
+  });
+
   const logs = ref([]);
   const systemStatus = ref({});
 
-  // Reconnection settings
+  // Reconnection logic
   let reconnectInterval = null;
   let reconnectAttempts = 0;
-  const maxReconnectAttempts = 10;
-  const reconnectDelay = 3000;
+  const maxReconnectAttempts = 100;
 
-  // Connect function
   function connect() {
-    try {
-      if (ws.value?.readyState === WebSocket.OPEN) return;
+    if (ws.value?.readyState === WebSocket.OPEN) return;
 
-      console.log("🔌 Connecting to WebSocket...");
-      ws.value = new WebSocket(url);
+    ws.value = new WebSocket(url);
 
-      ws.value.onopen = () => {
-        console.log("✅ WebSocket connected");
-        connected.value = true;
-        error.value = null;
-        reconnectAttempts = 0;
+    ws.value.onopen = () => {
+      console.log("✅ WS Connected");
+      connected.value = true;
+      error.value = null;
+      reconnectAttempts = 0;
+      if (reconnectInterval) clearInterval(reconnectInterval);
 
-        if (reconnectInterval) {
-          clearInterval(reconnectInterval);
-          reconnectInterval = null;
-        }
+      // Chiedi lo stato iniziale appena connesso
+      sendMessage("request-state");
+    };
 
-        // Request initial state
-        sendMessage("request-state");
-      };
+    ws.value.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        handleMessage(data);
+      } catch (err) {
+        console.error("WS Parse Error", err);
+      }
+    };
 
-      ws.value.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          handleMessage(data);
-        } catch (err) {
-          console.error("Error parsing message:", err);
-        }
-      };
+    ws.value.onclose = () => {
+      connected.value = false;
+      ws.value = null;
+      if (!reconnectInterval) startReconnect();
+    };
 
-      ws.value.onerror = (err) => {
-        console.error("❌ WebSocket error:", err);
-        error.value = "Connection error";
-      };
-
-      ws.value.onclose = () => {
-        console.log("🔴 WebSocket disconnected");
-        connected.value = false;
-        ws.value = null;
-        startReconnect();
-      };
-    } catch (err) {
-      console.error("Failed to create WebSocket:", err);
-      error.value = err.message;
-      startReconnect();
-    }
+    ws.value.onerror = (e) => {
+      console.error("WS Error", e);
+    };
   }
 
-  // Auto reconnect
   function startReconnect() {
-    if (reconnectInterval) return;
-
-    if (reconnectAttempts >= maxReconnectAttempts) {
-      error.value = "Max reconnection attempts reached";
-      return;
-    }
-
     reconnectInterval = setInterval(() => {
       reconnectAttempts++;
-      console.log(`🔄 Reconnect attempt ${reconnectAttempts}/${maxReconnectAttempts}...`);
+      console.log(`♻️ Reconnecting (${reconnectAttempts})...`);
       connect();
-    }, reconnectDelay);
+    }, 3000);
   }
 
-  // Handle messages
   function handleMessage(data) {
     const { type, payload } = data;
 
     switch (type) {
       case "initial-state":
-        if (payload.account_info) accountInfo.value = payload.account_info;
-        if (payload.positions) positions.value = payload.positions;
-        if (payload.pnl) pnl.value = payload.pnl;
-        if (payload.logs) logs.value = payload.logs.slice(-100);
+        // Ripristina tutto lo stato
+        if (payload.account) accountInfo.value = payload.account;
+        if (payload.active_position) activePosition.value = payload.active_position;
+        if (payload.latest_price) latestPrice.value = payload.latest_price;
+        if (payload.logs) logs.value = payload.logs;
         break;
 
-      case "account-update":
+      case "price_update":
+        // Aggiornamento ultra-rapido
+        latestPrice.value = payload;
+        // Se abbiamo una posizione attiva sullo stesso simbolo, aggiorniamo il prezzo corrente anche lì
+        if (activePosition.value && activePosition.value.symbol === payload.symbol) {
+          activePosition.value.current_price = payload.price;
+          // Ricalcolo PnL UI-side per fluidità (opzionale)
+          activePosition.value.unrealized_pnl = (payload.price - activePosition.value.entry_price) * activePosition.value.shares;
+        }
+        break;
+
+      case "position_update":
+        console.log("📦 Position Update Received:", payload);
+        if (Array.isArray(payload)) {
+          // Se è una lista (es. []), prendiamo il primo elemento o null
+          activePosition.value = payload.length > 0 ? payload[0] : null;
+        } else {
+          // Se è già un oggetto singolo o null
+          activePosition.value = payload;
+        }
+        break;
+
+      case "account_update":
         accountInfo.value = { ...accountInfo.value, ...payload };
-        break;
-
-      case "position-update":
-      case "positions-update":
-        positions.value = Array.isArray(payload) ? payload : [payload];
-        break;
-
-      case "pnl-update":
-        pnl.value = payload;
-        break;
-
-      case "system-status":
-        systemStatus.value = payload;
-        break;
-
-      case "bot-status":
-        systemStatus.value = { ...systemStatus.value, ...payload };
         break;
 
       case "log":
         logs.value.push({
           ...payload,
-          id: Date.now() + Math.random(),
+          id: Date.now() + Math.random(), // ID univoco per v-for key
           timestamp: payload.timestamp || new Date().toLocaleTimeString(),
         });
-        if (logs.value.length > 100) {
-          logs.value = logs.value.slice(-100);
-        }
-        break;
-
-      case "error":
-        error.value = payload.message;
-        logs.value.push({
-          id: Date.now(),
-          timestamp: new Date().toLocaleTimeString(),
-          level: "error",
-          message: payload.message || "Unknown error",
-        });
+        if (logs.value.length > 50) logs.value.shift(); // Tieni solo ultimi 50
         break;
     }
   }
 
-  // Send message
   function sendMessage(type, payload = {}) {
     if (ws.value?.readyState === WebSocket.OPEN) {
-      ws.value.send(
-        JSON.stringify({
-          type,
-          payload,
-          timestamp: new Date().toISOString(),
-        })
-      );
-      return true;
+      ws.value.send(JSON.stringify({ type, payload }));
     }
-    return false;
   }
 
-  // Bot control commands
-  const pauseBot = () => sendMessage("command", { type: "pause" });
-  const resumeBot = () => sendMessage("command", { type: "resume" });
-  const stopBot = () => sendMessage("command", { type: "stop" });
-  const forceUpdate = () => sendMessage("command", { type: "force_update" });
+  // Commands
+  const sendCommand = (cmd, data = {}) => sendMessage("command", { type: cmd, ...data });
 
-  // Disconnect
-  function disconnect() {
-    if (reconnectInterval) {
-      clearInterval(reconnectInterval);
-      reconnectInterval = null;
-    }
-
-    if (ws.value) {
-      ws.value.close();
-      ws.value = null;
-    }
-
-    connected.value = false;
-  }
-
-  // Lifecycle
-  onMounted(() => {
-    connect();
-  });
-
+  onMounted(() => connect());
   onUnmounted(() => {
-    disconnect();
+    if (ws.value) ws.value.close();
+    if (reconnectInterval) clearInterval(reconnectInterval);
   });
 
   return {
-    // State
     connected,
     error,
-
-    // Data
     accountInfo,
-    positions,
-    pnl,
+    activePosition,
+    latestPrice,
     logs,
-    systemStatus,
-
-    // Methods
-    connect,
-    disconnect,
-    sendMessage,
-
-    // Bot controls
-    pauseBot,
-    resumeBot,
-    stopBot,
-    forceUpdate,
+    sendCommand,
   };
 }

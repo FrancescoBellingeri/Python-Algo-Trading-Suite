@@ -27,6 +27,8 @@ class ExecutionHandler:
         self.stop_price = None
         self.position_size = 0
 
+        self.broadcast_position_update()
+
         self.atr_multiplier = 10
         
         logger.info(f"ExecutionHandler initialized - Capital: ${capital:,.0f}")
@@ -185,6 +187,8 @@ class ExecutionHandler:
                     "timestamp": pd.Timestamp.now().isoformat()
                 })
 
+                self.broadcast_position_update()
+
                 return True
             else:
                 logger.warning(f"Entry Order not immediate: {parent_trade.orderStatus.status}")
@@ -313,6 +317,8 @@ class ExecutionHandler:
                 self.entry_price = None
                 self.stop_price = None
                 self.position_size = 0
+
+                self.broadcast_position_update()
                 
                 return True
             
@@ -336,56 +342,6 @@ class ExecutionHandler:
         
         return False
     
-    def get_current_pnl(self):
-        """Gets current P&L of open position."""
-        portfolio = self.ib.portfolio()
-        
-        for item in portfolio:
-            if item.contract.symbol == SYMBOL:
-                pnl = item.unrealizedPnL
-                
-                # Send current P&L
-                redis_publisher.publish("current-pnl", {
-                    "symbol": SYMBOL,
-                    "unrealized_pnl": pnl,
-                    "position_size": self.position_size,
-                    "entry_price": self.entry_price
-                })
-                
-                return pnl
-        
-        return 0.0
-    
-    def get_position_info(self):
-        """
-        Gets detailed information on current position.
-        
-        Returns:
-            dict with position info or None
-        """
-        positions = self.ib.positions()
-        
-        for position in positions:
-            if position.contract.symbol == SYMBOL and position.position != 0:
-                portfolio = self.ib.portfolio()
-                
-                for item in portfolio:
-                    if item.contract.symbol == SYMBOL:
-                        info = {
-                            'shares': position.position,
-                            'avg_cost': position.avgCost,
-                            'market_value': item.marketValue,
-                            'unrealized_pnl': item.unrealizedPnL,
-                            'realized_pnl': item.realizedPNL
-                        }
-                        
-                        # Send position info
-                        redis_publisher.publish("position-info", info)
-                        
-                        return info
-        
-        return None
-
     def update_capital(self):
         """
         Updates self.capital retrieving NetLiquidation value from IB account.
@@ -459,6 +415,8 @@ class ExecutionHandler:
 
                 self.current_position = None
                 self.position_size = 0
+
+                self.broadcast_position_update()
                 self.entry_price = None
                 self.stop_price = None
                 self.current_stop_order = None
@@ -519,6 +477,9 @@ class ExecutionHandler:
                         "entry_price": self.entry_price,
                         "risk": "unlimited"
                     })
+            
+            # Broadcast initial state
+            self.broadcast_position_update()
             
             return {'shares': self.position_size}
             
@@ -653,6 +614,8 @@ class ExecutionHandler:
                 self.current_position = None
                 self.current_stop_order = None
                 self.position_size = 0
+
+                self.broadcast_position_update()
                 return True
 
             shares_to_close = abs(target_pos.position)
@@ -677,6 +640,8 @@ class ExecutionHandler:
                 self.entry_price = None
                 self.stop_price = None
                 self.position_size = 0
+
+                self.broadcast_position_update()
                 
                 redis_publisher.publish("position-closed", {
                     "reason": "force_close",
@@ -691,4 +656,50 @@ class ExecutionHandler:
         except Exception as e:
             logger.error(f"Critical close_all_positions error: {e}")
             redis_publisher.send_error(f"Total closure error: {str(e)}")
+            redis_publisher.send_error(f"Total closure error: {str(e)}")
             return False
+
+    def broadcast_position_update(self, current_ema_value=0.0):
+        """
+        Gathers all position data and sends a standardized update to the dashboard.
+        """
+        try:
+            if not self.has_position():
+                # Send empty list to clear dashboard
+                redis_publisher.send_position_update([])
+                return None
+
+            # Get portfolio data for PnL
+            portfolio = self.ib.portfolio()
+            pnl = 0.0
+            market_value = 0.0
+            market_price = 0.0
+            
+            for item in portfolio:
+                if item.contract.symbol == SYMBOL:
+                    pnl = item.marketValue - (item.averageCost * item.position)
+                    market_value = item.marketValue
+                    market_price = item.marketPrice
+                    break
+            
+            # Construct position object matching dashboard expectations
+            position_data = {
+                "symbol": SYMBOL,
+                "shares": self.position_size,
+                "entry_price": self.entry_price,
+                "current_price": market_price,
+                "market_value": market_value,
+                "unrealized_pnl": pnl,
+                "current_stop": self.stop_price,
+                "current_trailing_stop": self.stop_price,
+                "current_sma_value": current_ema_value,
+                "timestamp": pd.Timestamp.now().isoformat()
+            }
+            
+            # Send as list (dashboard expects list of positions)
+            redis_publisher.send_position_update([position_data])
+            return position_data
+
+        except Exception as e:
+            logger.error(f"Error broadcasting position update: {e}")
+            return None
