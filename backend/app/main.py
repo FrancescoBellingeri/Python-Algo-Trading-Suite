@@ -14,17 +14,17 @@ from .websocket_manager import ConnectionManager
 from .redis_client import RedisManager
 from .models import MessageType, WebSocketMessage
 
-# Carica variabili ambiente
+# Load environment variables
 load_dotenv()
 
-# Inizializza FastAPI
+# Initialize FastAPI
 app = FastAPI(
     title="Trading Bot WebSocket Server",
     description="Real-time trading data streaming server",
     version="1.0.0"
 )
 
-# Configurazione CORS
+# CORS Configuration
 origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173").split(",")
 
 app.add_middleware(
@@ -35,7 +35,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Inizializza managers
+# Initialize managers
 manager = ConnectionManager()
 redis_manager = RedisManager(
     host=os.getenv("REDIS_HOST", "localhost"),
@@ -43,7 +43,7 @@ redis_manager = RedisManager(
     db=int(os.getenv("REDIS_DB", 0))
 )
 
-# Flag per stato del sistema
+# System status flags
 system_status = {
     "redis_connected": False,
     "bot_connected": False,
@@ -54,67 +54,67 @@ system_status = {
 # Store the main event loop
 main_loop = None
 
-# ==================== EVENTI STARTUP/SHUTDOWN ====================
+# ==================== STARTUP/SHUTDOWN EVENTS ====================
 
 @app.on_event("startup")
 async def startup_event():
-    """Inizializzazione all'avvio del server"""
+    """Server startup initialization"""
     global main_loop
     print("🚀 Starting Trading WebSocket Server...")
     
     # Store the main event loop
     main_loop = asyncio.get_running_loop()
     
-    # Connetti a Redis
+    # Connect to Redis
     redis_connected = await redis_manager.connect()
     system_status["redis_connected"] = redis_connected
     
     if redis_connected:
         print("✅ Redis connection established")
         
-        # Recupera stato precedente se esiste
+        # Retrieve previous state if exists
         saved_state = await redis_manager.get_state("trading:current_state")
         if saved_state:
             manager.current_state = saved_state
             print("✅ Previous state restored from Redis")
         
-        # Sottoscrivi al canale del bot con callback modificato
+        # Subscribe to bot channel with modified callback
         def handle_bot_message(message):
-            """Gestisce messaggi ricevuti dal bot via Redis"""
+            """Handles messages received from bot via Redis"""
             try:
-                # Aggiorna stato sistema
+                # Update system status
                 system_status["bot_connected"] = True
                 system_status["last_bot_message"] = datetime.now().isoformat()
                 
-                # Estrai tipo e payload
+                # Extract type and payload
                 msg_type = message.get("type", "unknown")
                 payload = message.get("payload", {})
                 
-                # Aggiorna stato interno
+                # Update internal state
                 manager.update_state(msg_type, payload)
                 
                 # Schedule async operations in the main loop
                 if main_loop and main_loop.is_running():
-                    # Salva stato in Redis
+                    # Save state to Redis
                     asyncio.run_coroutine_threadsafe(
                         redis_manager.set_state("trading:current_state", manager.current_state),
                         main_loop
                     )
                     
-                    # Broadcast ai client WebSocket
+                    # Broadcast to WebSocket clients
                     asyncio.run_coroutine_threadsafe(
                         manager.broadcast_json(msg_type, payload),
                         main_loop
                     )
                 
-                # Log per debug (escludi i log per evitare loop)
+                # Debug log (exclude logs to avoid loops)
                 if msg_type != "log":
                     print(f"📨 Received from bot: {msg_type}")
                     
             except Exception as e:
                 print(f"❌ Error handling bot message: {e}")
         
-        # Avvia sottoscrizione
+        # Start subscription
         redis_manager.subscribe_sync("trading-bot-channel", handle_bot_message)
         print("✅ Subscribed to trading-bot-channel")
     else:
@@ -122,17 +122,17 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    """Pulizia alla chiusura del server"""
+    """Server shutdown cleanup"""
     print("🛑 Shutting down server...")
     
-    # Salva stato finale
+    # Save final state
     if redis_manager.async_client:
         await redis_manager.set_state("trading:current_state", manager.current_state)
     
-    # Disconnetti Redis
+    # Disconnect Redis
     await redis_manager.disconnect()
     
-    # Chiudi tutte le connessioni WebSocket
+    # Close all WebSocket connections
     for ws in list(manager.active_connections):
         await ws.close()
     
@@ -143,21 +143,21 @@ async def shutdown_event():
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     """
-    WebSocket endpoint per la dashboard Vue
-    Gestisce comunicazione real-time con i client
+    WebSocket endpoint for Vue dashboard
+    Handles real-time communication with clients
     """
     await manager.connect(websocket)
     
     try:
         while True:
-            # Ricevi messaggi dal client
+            # Receive messages from client
             data = await websocket.receive_text()
             
             try:
                 message = json.loads(data)
                 msg_type = message.get("type")
                 
-                # Gestisci richieste specifiche del client
+                # Handle specific client requests
                 if msg_type == "ping":
                     # Heartbeat
                     await websocket.send_json({
@@ -166,11 +166,11 @@ async def websocket_endpoint(websocket: WebSocket):
                     })
                 
                 elif msg_type == "request-state":
-                    # Richiesta stato completo
+                    # Full state request
                     await manager.send_initial_state(websocket)
                 
                 elif msg_type == "request-positions":
-                    # Richiesta solo posizioni
+                    # Positions only request
                     await websocket.send_json({
                         "type": "positions-update",
                         "payload": manager.current_state["positions"],
@@ -178,7 +178,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     })
                 
                 elif msg_type == "request-orders":
-                    # Richiesta solo ordini
+                    # Orders only request
                     await websocket.send_json({
                         "type": "orders-update",
                         "payload": manager.current_state["orders"],
@@ -186,15 +186,15 @@ async def websocket_endpoint(websocket: WebSocket):
                     })
                 
                 elif msg_type == "clear-logs":
-                    # Clear logs (solo per questo client)
+                    # Clear logs (only for this client)
                     manager.current_state["logs"] = []
                     await manager.broadcast_json("logs-cleared", {})
                 
                 elif msg_type == "command":
-                    # Invia comando al bot via Redis
+                    # Send command to bot via Redis
                     command_payload = message.get("payload", {})
                     
-                    # Usa il main loop per operazioni async
+                    # Use main loop for async operations
                     if main_loop and main_loop.is_running():
                         asyncio.run_coroutine_threadsafe(
                             redis_manager.publish("trading-bot-commands", command_payload),
@@ -236,7 +236,7 @@ async def root():
 
 @app.get("/api/status")
 async def get_status():
-    """Stato dettagliato del sistema"""
+    """Detailed system status"""
     return {
         "server": {
             "status": "online",
@@ -259,17 +259,17 @@ async def get_status():
 
 @app.get("/api/state")
 async def get_current_state():
-    """Recupera stato corrente completo"""
+    """Retrieve full current state"""
     return JSONResponse(content=manager.current_state)
 
 @app.get("/api/positions")
 async def get_positions():
-    """Recupera posizioni correnti"""
+    """Retrieve current positions"""
     return JSONResponse(content=manager.current_state["positions"])
 
 @app.get("/api/orders")
 async def get_orders(status: Optional[str] = None):
-    """Recupera ordini, opzionalmente filtrati per status"""
+    """Retrieve orders, optionally filtered by status"""
     orders = manager.current_state["orders"]
     
     if status:
@@ -279,18 +279,18 @@ async def get_orders(status: Optional[str] = None):
 
 @app.get("/api/pnl")
 async def get_pnl():
-    """Recupera P&L corrente"""
+    """Retrieve current P&L"""
     return JSONResponse(content=manager.current_state["pnl"])
 
 @app.get("/api/logs")
 async def get_logs(limit: int = 100, level: Optional[str] = None):
-    """Recupera logs, opzionalmente filtrati"""
+    """Retrieve logs, optionally filtered"""
     logs = manager.current_state["logs"]
     
     if level:
         logs = [l for l in logs if l.get("level") == level]
     
-    # Limita numero di logs
+    # Limit number of logs
     if len(logs) > limit:
         logs = logs[-limit:]
     
@@ -298,7 +298,7 @@ async def get_logs(limit: int = 100, level: Optional[str] = None):
 
 @app.post("/api/command")
 async def send_command(command: dict):
-    """Invia comando al bot via Redis"""
+    """Send command to bot via Redis"""
     if not redis_manager.async_client:
         raise HTTPException(status_code=503, detail="Redis not connected")
     
@@ -313,7 +313,7 @@ async def send_command(command: dict):
 
 @app.exception_handler(Exception)
 async def general_exception_handler(request, exc):
-    """Gestione errori generali"""
+    """General error handling"""
     print(f"Unhandled error: {exc}")
     return JSONResponse(
         status_code=500,

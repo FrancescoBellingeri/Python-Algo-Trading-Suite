@@ -8,7 +8,7 @@ def get_streak_stats(pnl_series):
     # Create a series of 1 (winning) and -1 (losing)
     streaks = (pnl_series > 0).astype(int)
     
-    # Identifichiamo i cambi di streak
+    # Identify streak changes
     changes = streaks.diff().fillna(0) != 0
     
     # Assign an ID to each streak
@@ -108,7 +108,7 @@ if len(trading_results) > 0:
         profit_factor = wins['pnl'].sum() / abs(losses['pnl'].sum())
         print(f"Profit Factor: {profit_factor:.2f}")
     
-    # Statistiche sulle uscite
+    # Exit statistics
     exit_stats = trading_results['exit_reason'].value_counts()
     print(f"\nExit Statistics:")
     for reason, count in exit_stats.items():

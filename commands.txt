@@ -1,7 +1,7 @@
-avviare: docker compose up -d
-fermare: docker compose down 
+start: docker compose up -d
+stop: docker compose down 
 status: docker compose ps
 logs: docker compose logs -f trading-bot docker compose logs -f ib-gateway docker compose logs --tail=100 -f trading-bot
 
-ricostruire dopo aggiornamento: docker compose up -d --build
+rebuild after update: docker compose up -d --build
 restart bot: docker compose restart trading-bot

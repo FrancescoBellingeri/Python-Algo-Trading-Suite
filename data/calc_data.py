@@ -3,14 +3,14 @@ import pandas_ta as ta
 import numpy as np
 import datetime
 
-# Carica il dataset
+# Load the dataset
 df = pd.read_csv('data/qqq_IB_5min.csv')
 df['date'] = pd.to_datetime(df['date'], utc=True).dt.tz_convert('America/New_York')
 
-# Step 2: Calcola RENDIMENTI GIORNALIERI (per la volatilità)
+# Step 2: Calculate DAILY RETURNS (for volatility)
 # df['daily_return'] = np.log(df['open'] / df['open'].shift(1)) * 100
 
-# # Step 4: Calcola VOLATILITÀ sui rendimenti giornalieri
+# # Step 4: Calculate VOLATILITY on daily returns
 # df['volatility'] = df['return'].rolling(window=21).std()
 # df.ta.ema(length=50, append=True)
 #df.ta.tsi(long=25, short=13, append=True)
@@ -23,5 +23,5 @@ df.ta.willr(length=10, append=True)
 df.dropna(inplace=True)
 print(df.tail())
 
-# Salva
+# Save
 df.to_csv('data/qqq_5min.csv', index=False)

@@ -5,7 +5,7 @@ from config import IB_HOST, IB_PORT, IB_CLIENT_ID
 from datetime import datetime
 
 class IBConnector:
-    """Gestisce la connessione a Interactive Brokers."""
+    """Handles connection to Interactive Brokers."""
     
     def __init__(self):
         self.ib = IB()
@@ -14,10 +14,10 @@ class IBConnector:
         self.reconnect_attempts = 0
         
     async def connect(self):
-        """Connette a TWS/IB Gateway."""
+        """Connects to TWS/IB Gateway."""
         try:
-            # Invia messaggio di tentativo connessione
-            redis_publisher.log("info", f"📡 Tentativo connessione a IB {IB_HOST}:{IB_PORT}...")
+            # Send connection attempt message
+            redis_publisher.log("info", f"📡 Connection attempt to IB {IB_HOST}:{IB_PORT}...")
             redis_publisher.publish("connection-status", {
                 "status": "connecting",
                 "host": IB_HOST,
@@ -38,10 +38,10 @@ class IBConnector:
             self.connection_time = datetime.now()
             self.reconnect_attempts = 0
             
-            logger.info(f"Connesso a IB su {IB_HOST}:{IB_PORT}")
+            logger.info(f"Connected to IB on {IB_HOST}:{IB_PORT}")
             
-            # Invia conferma connessione alla dashboard
-            redis_publisher.log("success", f"✅ Connesso a Interactive Brokers")
+            # Send connection confirmation to dashboard
+            redis_publisher.log("success", f"✅ Connected to Interactive Brokers")
             redis_publisher.publish("connection-status", {
                 "status": "connected",
                 "host": IB_HOST,
@@ -51,7 +51,7 @@ class IBConnector:
                 "is_paper": IB_PORT == 7497  # 7497 = paper trading
             })
             
-            # Invia info account
+            # Send account info
             self._send_account_info()
             
             # Setup event handlers
@@ -63,11 +63,11 @@ class IBConnector:
             self.connected = False
             self.reconnect_attempts += 1
             
-            logger.error(f"Errore connessione: {e}")
+            logger.error(f"Connection error: {e}")
             
-            # Invia errore alla dashboard
-            redis_publisher.send_error(f"Connessione IB fallita: {str(e)}", error_code=500)
-            redis_publisher.log("error", f"❌ Errore connessione IB: {str(e)}")
+            # Send error to dashboard
+            redis_publisher.send_error(f"IB connection failed: {str(e)}", error_code=500)
+            redis_publisher.log("error", f"❌ IB connection error: {str(e)}")
             redis_publisher.publish("connection-status", {
                 "status": "error",
                 "error": str(e),
@@ -79,11 +79,11 @@ class IBConnector:
             return False
     
     def disconnect(self):
-        """Disconnette da IB."""
+        """Disconnects from IB."""
         if self.connected:
             try:
-                # Invia notifica disconnessione
-                redis_publisher.log("warning", "🔌 Disconnessione da IB...")
+                # Send disconnection notification
+                redis_publisher.log("warning", "🔌 Disconnecting from IB...")
                 redis_publisher.publish("connection-status", {
                     "status": "disconnecting",
                     "reason": "manual_disconnect"
@@ -93,39 +93,39 @@ class IBConnector:
                 self.connected = False
                 self.connection_time = None
                 
-                logger.info("Disconnesso da IB")
+                logger.info("Disconnected from IB")
                 
-                # Conferma disconnessione
-                redis_publisher.log("info", "📴 Disconnesso da Interactive Brokers")
+                # Disconnection confirmation
+                redis_publisher.log("info", "📴 Disconnected from Interactive Brokers")
                 redis_publisher.publish("connection-status", {
                     "status": "disconnected",
                     "timestamp": datetime.now().isoformat()
                 })
                 
             except Exception as e:
-                logger.error(f"Errore durante disconnessione: {e}")
-                redis_publisher.send_error(f"Errore disconnessione: {str(e)}")
+                logger.error(f"Error during disconnection: {e}")
+                redis_publisher.send_error(f"Disconnection error: {str(e)}")
     
     def is_connected(self):
-        """Verifica se è connesso e invia update."""
+        """Checks if connected and sends update."""
         is_connected = self.ib.isConnected()
         
-        # Se lo stato è cambiato, notifica
+        # If state changed, notify
         if is_connected != self.connected:
             self.connected = is_connected
             
             if not is_connected:
-                # Connessione persa inaspettatamente
-                redis_publisher.log("error", "⚠️ Connessione IB persa!")
-                redis_publisher.send_error("Connessione IB persa inaspettatamente")
+                # Connection lost unexpectedly
+                redis_publisher.log("error", "⚠️ IB connection lost!")
+                redis_publisher.send_error("IB connection lost unexpectedly")
                 redis_publisher.publish("connection-status", {
                     "status": "disconnected",
                     "reason": "connection_lost",
                     "timestamp": datetime.now().isoformat()
                 })
             else:
-                # Riconnesso
-                redis_publisher.log("success", "✅ Riconnesso a IB")
+                # Reconnected
+                redis_publisher.log("success", "✅ Reconnected to IB")
                 redis_publisher.publish("connection-status", {
                     "status": "connected",
                     "reason": "reconnected",
@@ -135,22 +135,22 @@ class IBConnector:
         return is_connected
     
     def _send_account_info(self):
-        """Invia informazioni account alla dashboard."""
+        """Sends account information to dashboard."""
         try:
-            # Ottieni info account
+            # Get account info
             account_values = self.ib.accountValues()
             account_summary = self.ib.accountSummary()
             
             if account_values:
-                # Crea dizionario con valori account
+                # Create dictionary with account values
                 account_dict = {}
                 for av in account_values:
                     account_dict[av.tag] = av.value
                 
-                # Invia alla dashboard
+                # Send to dashboard
                 redis_publisher.send_account_update(account_dict)
                 
-                # Log info principali
+                # Log main info
                 net_liq = account_dict.get('NetLiquidation', 'N/A')
                 buying_power = account_dict.get('BuyingPower', 'N/A')
                 redis_publisher.log("info", f"💰 Account - Net Liq: ${net_liq}, Buying Power: ${buying_power}")
@@ -165,47 +165,47 @@ class IBConnector:
                 })
                 
         except Exception as e:
-            logger.error(f"Errore recupero info account: {e}")
-            redis_publisher.log("warning", "⚠️ Impossibile recuperare info account")
+            logger.error(f"Error retrieving account info: {e}")
+            redis_publisher.log("warning", "⚠️ Unable to retrieve account info")
     
     def _setup_event_handlers(self):
-        """Setup event handlers per IB."""
+        """Setup event handlers for IB."""
         try:
-            # Handler per errori IB
+            # Handler for IB errors
             def on_error(reqId, errorCode, errorString, contract):
-                if errorCode < 2000:  # Errori critici
+                if errorCode < 2000:  # Critical errors
                     redis_publisher.send_error(f"IB Error {errorCode}: {errorString}", error_code=errorCode)
                     redis_publisher.log("error", f"IB Error {errorCode}: {errorString}")
-                elif errorCode not in [2104, 2106, 2107, 2108]:  # Ignora messaggi market data farm
+                elif errorCode not in [2104, 2106, 2107, 2108]:  # Ignore market data farm messages
                     redis_publisher.log("warning", f"IB Warning {errorCode}: {errorString}")
             
-            # Handler per disconnessione
+            # Handler for disconnection
             def on_disconnected():
                 self.connected = False
-                redis_publisher.log("error", "❌ IB Disconnesso inaspettatamente")
+                redis_publisher.log("error", "❌ IB Disconnected unexpectedly")
                 redis_publisher.publish("connection-status", {
                     "status": "disconnected",
                     "reason": "unexpected_disconnect",
                     "timestamp": datetime.now().isoformat()
                 })
             
-            # Registra handlers
+            # Register handlers
             self.ib.errorEvent += on_error
             self.ib.disconnectedEvent += on_disconnected
             
-            logger.info("Event handlers IB configurati")
+            logger.info("IB event handlers configured")
             
         except Exception as e:
-            logger.error(f"Errore setup event handlers: {e}")
+            logger.error(f"Error setting up event handlers: {e}")
     
     async def keep_alive(self):
-        """Mantiene viva la connessione e invia heartbeat."""
+        """Keeps connection alive and sends heartbeat."""
         if self.is_connected():
             try:
-                # Request current time per tenere viva la connessione
+                # Request current time to keep connection alive
                 server_time = self.ib.reqCurrentTime()
                 
-                # Invia heartbeat alla dashboard ogni tanto
+                # Send heartbeat to dashboard occasionally
                 if hasattr(self, '_last_heartbeat'):
                     if (datetime.now() - self._last_heartbeat).seconds > 30:
                         redis_publisher.publish("ib-heartbeat", {
@@ -218,11 +218,11 @@ class IBConnector:
                     self._last_heartbeat = datetime.now()
                     
             except Exception as e:
-                logger.error(f"Errore keep-alive: {e}")
-                self.is_connected()  # Verificherà e notificherà se disconnesso
+                logger.error(f"Keep-alive error: {e}")
+                self.is_connected()  # Will verify and notify if disconnected
     
     def get_connection_info(self):
-        """Ritorna info sulla connessione corrente."""
+        """Returns current connection info."""
         info = {
             "connected": self.connected,
             "host": IB_HOST,
@@ -233,7 +233,7 @@ class IBConnector:
             "uptime_seconds": (datetime.now() - self.connection_time).total_seconds() if self.connection_time else 0
         }
         
-        # Invia anche alla dashboard
+        # Send also to dashboard
         redis_publisher.publish("connection-info", info)
         
         return info

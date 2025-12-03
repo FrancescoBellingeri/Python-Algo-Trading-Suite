@@ -85,24 +85,42 @@ services:
     container_name: trading-backend
     restart: always
     environment:
-      # Configurazione Redis interna a Docker
-      - REDIS_HOST=redis # Nome del servizio Redis nel docker-compose
-      - REDIS_PORT=6379
-
-      # Configurazione per Vercel (CORS)
-      # Metti sia localhost (per i test) che il dominio Vercel
-      - ALLOWED_ORIGINS=http://localhost:5173,https://python-algo-trading-suite.vercel.app
-
-      # (Opzionale) Se il backend deve leggere dal DB
-      - POSTGRES_USER=${POSTGRES_USER}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-      - POSTGRES_DB=${POSTGRES_DB}
-      - DB_HOST=db
-    ports:
-      - "8000:8000" # Espone la porta 8000 (SOLO HTTP, vedi sotto per HTTPS)
+      REDIS_HOST: trading-redis
+      REDIS_PORT: 6379
+      ALLOWED_ORIGINS: http://localhost:5173,https://python-algo-trading-suite.vercel.app,https://algo-trading-suite.duckdns.org
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      DB_HOST: db
+    expose:
+      - "8000"
     depends_on:
       - redis
       - db
+    networks:
+      - trading-network
+
+  npm:
+    image: "jc21/nginx-proxy-manager:latest"
+    container_name: nginx-proxy-manager
+    restart: unless-stopped
+    ports:
+      - "80:80" # Richiesto per generare certificati
+      - "81:81" # Pannello Admin
+      - "443:443" # HTTPS traffico sicuro
+    volumes:
+      - ./data/npm:/data
+      - ./data/letsencrypt:/etc/letsencrypt
+    networks:
+      - trading-network
+  duckdns:
+    image: lscr.io/linuxserver/duckdns:latest
+    container_name: duckdns
+    environment:
+      - SUBDOMAINS=algo-trading-suite
+      - TOKEN=9e5aa0d4-1485-4ebe-b55c-53b3d975fb0a
+      - LOG_FILE=false
+    restart: unless-stopped
     networks:
       - trading-network
 

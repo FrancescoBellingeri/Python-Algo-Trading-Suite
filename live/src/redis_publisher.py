@@ -8,7 +8,7 @@ import config
 logger = logging.getLogger(__name__)
 
 class RedisPublisher:
-    """Gestisce pubblicazione messaggi dal bot verso il server WebSocket"""
+    """Handles message publishing from bot to WebSocket server"""
     
     def __init__(self):
         self.client: Optional[redis.Redis] = None
@@ -20,7 +20,7 @@ class RedisPublisher:
             self.connect()
     
     def connect(self) -> bool:
-        """Connetti a Redis"""
+        """Connect to Redis"""
         if not self.enabled:
             logger.info("WebSocket publishing disabled")
             return False
@@ -33,29 +33,29 @@ class RedisPublisher:
                 decode_responses=True
             )
             
-            # Test connessione
+            # Test connection
             self.client.ping()
             logger.info(f"✅ Connected to Redis at {config.REDIS_HOST}:{config.REDIS_PORT}")
             
-            # Setup comando listener
+            # Setup command listener
             self._setup_command_listener()
             
             return True
             
         except Exception as e:
             logger.error(f"❌ Failed to connect to Redis: {e}")
-            self.enabled = False  # Disabilita se non riesce a connettersi
+            self.enabled = False  # Disable if unable to connect
             return False
     
     def disconnect(self):
-        """Disconnetti da Redis"""
+        """Disconnect from Redis"""
         if self.pubsub:
             self.pubsub.close()
         if self.client:
             self.client.close()
     
     def publish(self, message_type: str, payload: Dict[str, Any]) -> bool:
-        """Pubblica messaggio sul canale Redis"""
+        """Publishes message to Redis channel"""
         if not self.enabled or not self.client:
             return False
             
@@ -77,7 +77,7 @@ class RedisPublisher:
             return False
     
     def log(self, level: str, message: str, details: Optional[Dict] = None):
-        """Invia log message al server"""
+        """Sends log message to server"""
         if not config.SEND_LOGS:
             return
             
@@ -90,8 +90,8 @@ class RedisPublisher:
         self.publish("log", log_entry)
     
     def send_account_update(self, account_values: Dict[str, Any]):
-        """Invia aggiornamento account da IB account values"""
-        # Estrai i valori importanti
+        """Sends account update from IB account values"""
+        # Extract important values
         account_data = {
             "net_liquidation": float(account_values.get('NetLiquidation', 0)),
             "buying_power": float(account_values.get('BuyingPower', 0)),
@@ -105,11 +105,11 @@ class RedisPublisher:
         self.publish("account-update", account_data)
         
     def send_position_update(self, positions: List[Dict[str, Any]]):
-        """Invia aggiornamento posizioni"""
+        """Sends position update"""
         if not config.SEND_POSITIONS:
             return
             
-        # Formatta posizioni per la dashboard
+        # Format positions for dashboard
         formatted_positions = []
         for pos in positions:
             formatted_pos = {
@@ -126,7 +126,7 @@ class RedisPublisher:
         self.publish("position-update", formatted_positions)
         
     def send_order_update(self, order: Dict[str, Any]):
-        """Invia aggiornamento ordine"""
+        """Sends order update"""
         if not config.SEND_ORDERS:
             return
             
@@ -146,7 +146,7 @@ class RedisPublisher:
         self.publish("order-update", order_data)
         
     def send_pnl_update(self, daily_pnl: float, unrealized_pnl: float, realized_pnl: float):
-        """Invia aggiornamento P&L"""
+        """Sends P&L update"""
         if not config.SEND_PNL:
             return
             
@@ -159,7 +159,7 @@ class RedisPublisher:
         self.publish("pnl-update", pnl_data)
         
     def send_error(self, error_msg: str, error_code: Optional[int] = None, details: Optional[Dict] = None):
-        """Invia messaggio di errore"""
+        """Sends error message"""
         error_data = {
             "message": error_msg,
             "code": error_code,
@@ -169,7 +169,7 @@ class RedisPublisher:
         self.publish("error", error_data)
         
     def send_trade_signal(self, signal_type: str, details: Dict[str, Any]):
-        """Invia segnale di trading alla dashboard"""
+        """Sends trading signal to dashboard"""
         signal_data = {
             "signal_type": signal_type,  # BUY, SELL, HOLD
             "symbol": config.SYMBOL,
@@ -180,7 +180,7 @@ class RedisPublisher:
         self.log("info", f"Signal: {signal_type} for {config.SYMBOL}", details)
     
     def _setup_command_listener(self):
-        """Setup listener per comandi dal server"""
+        """Setup listener for commands from server"""
         def listen_for_commands():
             try:
                 self.pubsub = self.client.pubsub()
@@ -205,19 +205,19 @@ class RedisPublisher:
             except Exception as e:
                 logger.error(f"Error in command listener: {e}")
         
-        # Avvia in thread separato
+        # Start in separate thread
         import threading
         thread = threading.Thread(target=listen_for_commands, daemon=True, name="Redis-Command-Listener")
         thread.start()
     
         def _handle_default_command(self, command: Dict[str, Any]):
-            """Gestisce comandi di default quando non c'è callback custom"""
+            """Handles default commands when there is no custom callback"""
             cmd_type = command.get("type")
             
             if cmd_type == "stop":
                 logger.warning("Received STOP command from dashboard")
                 self.log("warning", "Bot stopped by dashboard command")
-                # Qui potresti implementare la logica per fermare il bot
+                # Here you could implement logic to stop the bot
                 
             elif cmd_type == "pause":
                 logger.info("Received PAUSE command from dashboard")
@@ -233,16 +233,14 @@ class RedisPublisher:
                 
             elif cmd_type == "status":
                 logger.info("Status request from dashboard")
-                # Invia status update
+                # Send status update
                 
             else:
                 logger.warning(f"Unknown command type: {cmd_type}")
     
     def set_command_callback(self, callback):
-        """Imposta callback per gestire comandi ricevuti"""
+        """Sets callback to handle received commands"""
         self.commands_callback = callback
 
 # Singleton instance
 redis_publisher = RedisPublisher()
-    
-    

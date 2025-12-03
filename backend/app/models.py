@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import Enum
 
 class MessageType(str, Enum):
-    """Tipi di messaggi supportati"""
+    """Supported message types"""
     ACCOUNT_UPDATE = "account-update"
     POSITION_UPDATE = "position-update"
     ORDER_UPDATE = "order-update"

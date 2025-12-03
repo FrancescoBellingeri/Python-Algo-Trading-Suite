@@ -10,56 +10,56 @@ Base = declarative_base()
 
 class MarketData(Base):
     """
-    Modello della tabella su PostgreSQL.
+    PostgreSQL table model.
     """
     __tablename__ = 'market_data'
 
-    # Chiave primaria composta: Simbolo + Timestamp
+    # Composite primary key: Symbol + Timestamp
     timestamp = Column(TIMESTAMP(timezone=True), primary_key=True)
     symbol = Column(String(10), primary_key=True)
     
-    # Dati OHLCV
+    # OHLCV Data
     open = Column(Float)
     high = Column(Float)
     low = Column(Float)
     close = Column(Float)
     volume = Column(Float)
     
-    # Indicatori
+    # Indicators
     atr_14 = Column(Float, nullable=True)
     sma_200 = Column(Float, nullable=True)
     willr_10 = Column(Float, nullable=True)
 
 class DatabaseHandler:
     def __init__(self):
-        # Creiamo il motore di connessione a Postgres
+        # Create Postgres connection engine
         self.engine = create_engine(DATABASE_URL, echo=False)
         
-        # Crea le tabelle automaticamente se non esistono
+        # Automatically create tables if they don't exist
         try:
             Base.metadata.create_all(self.engine)
-            logger.info("Connessione DB PostgreSQL stabilita e tabelle verificate.")
-            redis_publisher.log("success", "Connessione DB PostgreSQL stabilita e tabelle verificate.")
+            logger.info("PostgreSQL DB connection established and tables verified.")
+            redis_publisher.log("success", "PostgreSQL DB connection established and tables verified.")
         except Exception as e:
-            logger.error(f"Errore connessione DB: {e}")
-            redis_publisher.send_error(f"Errore connessione DB: {e}")
+            logger.error(f"DB connection error: {e}")
+            redis_publisher.send_error(f"DB connection error: {e}")
             raise e
         
         self.Session = sessionmaker(bind=self.engine)
 
     def save_candles(self, df, symbol):
-        """Salva i dati (Upsert/Merge)."""
+        """Save data (Upsert/Merge)."""
         if df.empty: return
         
         session = self.Session()
         try:
             for _, row in df.iterrows():
-                # Gestione Timezone robusta
+                # Robust Timezone handling
                 ts = row['date']
                 if isinstance(ts, str):
                     ts = pd.to_datetime(ts)
                 
-                # Postgres vuole UTC esplicito
+                # Postgres requires explicit UTC
                 if ts.tzinfo is None:
                     ts = ts.tz_localize('UTC')
                 else:
@@ -81,14 +81,14 @@ class DatabaseHandler:
             return True
         except Exception as e:
             session.rollback()
-            logger.error(f"Errore salvataggio DB: {e}")
-            redis_publisher.send_error(f"Errore salvataggio DB: {e}")
+            logger.error(f"DB save error: {e}")
+            redis_publisher.send_error(f"DB save error: {e}")
             return False
         finally:
             session.close()
 
     def get_latest_data(self, symbol, limit=1000):
-        """Legge i dati dal DB."""
+        """Reads data from DB."""
         query = f"""
         SELECT * FROM (
             SELECT * FROM market_data 
@@ -104,10 +104,10 @@ class DatabaseHandler:
             if df.empty:
                 return df
             
-            # Converti colonna timestamp (che arriva come UTC) in NY Time per il bot
+            # Convert timestamp column (arriving as UTC) to NY Time for the bot
             df['date'] = pd.to_datetime(df['timestamp']).dt.tz_convert('America/New_York')
             
-            # Rinomina colonne per compatibilità col resto del codice
+            # Rename columns for compatibility with the rest of the code
             df = df.rename(columns={
                 'atr_14': 'ATR_14',
                 'sma_200': 'SMA_200',
@@ -116,6 +116,6 @@ class DatabaseHandler:
                 
             return df.sort_values('date').reset_index(drop=True)
         except Exception as e:
-            logger.error(f"Errore lettura DB: {e}")
-            redis_publisher.send_error(f"Errore lettura DB: {e}")
+            logger.error(f"DB read error: {e}")
+            redis_publisher.send_error(f"DB read error: {e}")
             return pd.DataFrame()

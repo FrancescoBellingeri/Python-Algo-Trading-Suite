@@ -10,14 +10,14 @@ class RedisManager:
         self.port = port
         self.db = db
         self.async_client: Optional[aioredis.Redis] = None
-        self.sync_client: Optional[redis.Redis] = None  # Usa redis normale, non asyncio
+        self.sync_client: Optional[redis.Redis] = None  # Use normal redis, not asyncio
         self.pubsub: Optional[redis.client.PubSub] = None
         self.subscriber_thread = None
 
     async def connect(self):
-        """Inizializza connessioni Redis async e sync"""
+        """Initializes async and sync Redis connections"""
         try:
-            # Client async per operazioni asincrone
+            # Async client for async operations
             self.async_client = aioredis.Redis(
                 host=self.host,
                 port=self.port,
@@ -28,7 +28,7 @@ class RedisManager:
             # Test ping async
             await self.async_client.ping()
 
-            # Client SYNC normale (NON asyncio) per pubsub
+            # Normal SYNC client (NOT asyncio) for pubsub
             self.sync_client = redis.Redis(
                 host=self.host,
                 port=self.port,
@@ -47,9 +47,9 @@ class RedisManager:
             return False
 
     async def disconnect(self):
-        """Chiude connessioni Redis"""
+        """Closes Redis connections"""
         if self.subscriber_thread and self.subscriber_thread.is_alive():
-            # Non possiamo fermare il thread direttamente, ma essendo daemon si fermerà
+            # We cannot stop the thread directly, but being daemon it will stop
             pass
 
         if self.pubsub:
@@ -62,7 +62,7 @@ class RedisManager:
             self.sync_client.close()
 
     async def get_state(self, key: str) -> Optional[dict]:
-        """Recupera stato salvato da Redis"""
+        """Retrieves saved state from Redis"""
         try:
             data = await self.async_client.get(key)
             if data:
@@ -73,7 +73,7 @@ class RedisManager:
             return None
 
     async def set_state(self, key: str, value: dict, expire: int = None):
-        """Salva stato in Redis"""
+        """Saves state to Redis"""
         try:
             json_data = json.dumps(value, default=str)
             if expire:
@@ -86,7 +86,7 @@ class RedisManager:
             return False
 
     async def publish(self, channel: str, message: dict):
-        """Pubblica messaggio su canale Redis"""
+        """Publishes message to Redis channel"""
         try:
             json_message = json.dumps(message, default=str)
             await self.async_client.publish(channel, json_message)
@@ -96,7 +96,7 @@ class RedisManager:
             return False
 
     def subscribe_sync(self, channel: str, callback: Callable):
-        """Sottoscrizione sincrona per ricevere messaggi dal bot"""
+        """Synchronous subscription to receive messages from bot"""
         if not self.sync_client:
             print("❌ Sync client not initialized")
             return None
@@ -106,7 +106,7 @@ class RedisManager:
 
         def listen():
             try:
-                # Ignora il primo messaggio che è la conferma di sottoscrizione
+                # Ignore the first message which is the subscription confirmation
                 for message in self.pubsub.listen():
                     if message['type'] == 'message':
                         try:
@@ -119,7 +119,7 @@ class RedisManager:
             except Exception as e:
                 print(f"Error in listen thread: {e}")
 
-        # Avvia in thread separato
+        # Start in separate thread
         import threading
         thread = threading.Thread(target=listen, daemon=True, name="Redis-Subscriber")
         thread.start()

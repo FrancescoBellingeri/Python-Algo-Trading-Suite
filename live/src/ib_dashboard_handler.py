@@ -8,7 +8,7 @@ import config
 logger = logging.getLogger(__name__)
 
 class IBDashboardHandler:
-    """Handler per inviare dati IB alla dashboard via Redis/WebSocket"""
+    """Handler to send IB data to dashboard via Redis/WebSocket"""
     
     def __init__(self, ib: IB):
         self.ib = ib
@@ -19,13 +19,13 @@ class IBDashboardHandler:
         # Setup event handlers
         self._setup_event_handlers()
         
-        # Invia stato iniziale
+        # Send initial state
         self._send_initial_state()
         
         logger.info("IBDashboardHandler initialized")
     
     def _setup_event_handlers(self):
-        """Configura gli event handler di IB"""
+        """Configures IB event handlers"""
         # Account updates
         self.ib.accountValueEvent += self.on_account_value
         self.ib.accountSummaryEvent += self.on_account_summary
@@ -49,7 +49,7 @@ class IBDashboardHandler:
         self.ib.disconnectedEvent += self.on_disconnected
         
     def _send_initial_state(self):
-        """Invia stato iniziale alla dashboard"""
+        """Sends initial state to dashboard"""
         try:
             # Account info
             account_values = self.ib.accountValues()
@@ -70,8 +70,8 @@ class IBDashboardHandler:
             self.publisher.send_error(f"Failed to send initial state: {str(e)}")
     
     def on_account_value(self, value):
-        """Handler per aggiornamenti account value"""
-        # Aggrega gli updates per evitare troppi messaggi
+        """Handler for account value updates"""
+        # Aggregates updates to avoid too many messages
         now = datetime.now()
         if (now - self.last_account_update).total_seconds() > self.update_interval:
             account_values = self.ib.accountValues()
@@ -79,12 +79,12 @@ class IBDashboardHandler:
             self.last_account_update = now
     
     def on_account_summary(self, value):
-        """Handler per account summary"""
-        # Simile a account value ma meno frequente
+        """Handler for account summary"""
+        # Similar to account value but less frequent
         pass
     
     def _process_account_values(self, account_values):
-        """Processa e invia account values"""
+        """Processes and sends account values"""
         account_dict = {}
         for av in account_values:
             account_dict[av.tag] = av.value
@@ -92,12 +92,12 @@ class IBDashboardHandler:
         self.publisher.send_account_update(account_dict)
     
     def on_position(self, position: Position):
-        """Handler per aggiornamenti posizione"""
+        """Handler for position updates"""
         positions = self.ib.positions()
         self._process_positions(positions)
     
     def _process_positions(self, positions: List[Position]):
-        """Processa e invia posizioni"""
+        """Processes and sends positions"""
         pos_list = []
         for pos in positions:
             pos_dict = {
@@ -105,13 +105,13 @@ class IBDashboardHandler:
                 "conId": pos.contract.conId,
                 "position": pos.position,
                 "avgCost": pos.avgCost,
-                "marketPrice": 0,  # Verrà aggiornato con market data
+                "marketPrice": 0,  # Will be updated with market data
                 "marketValue": 0,
                 "unrealizedPNL": 0,
                 "realizedPNL": 0,
             }
             
-            # Richiedi market data per questa posizione
+            # Request market data for this position
             if pos.position != 0:
                 self._update_position_market_data(pos.contract, pos_dict)
             
@@ -120,11 +120,11 @@ class IBDashboardHandler:
         self.publisher.send_position_update(pos_list)
     
     def _update_position_market_data(self, contract: Contract, pos_dict: dict):
-        """Aggiorna market data per una posizione"""
+        """Updates market data for a position"""
         try:
-            # Richiedi snapshot di market data
+            # Request market data snapshot
             ticker = self.ib.reqMktData(contract, '', False, False)
-            self.ib.sleep(0.5)  # Attendi dati
+            self.ib.sleep(0.5)  # Wait for data
             
             if ticker.marketPrice():
                 market_price = ticker.marketPrice()
@@ -132,14 +132,14 @@ class IBDashboardHandler:
                 pos_dict["marketValue"] = market_price * pos_dict["position"]
                 pos_dict["unrealizedPNL"] = (market_price - pos_dict["avgCost"]) * pos_dict["position"]
             
-            # Cancella market data subscription
+            # Cancel market data subscription
             self.ib.cancelMktData(contract)
             
         except Exception as e:
             logger.error(f"Error getting market data for {contract.symbol}: {e}")
     
     def on_order_status(self, trade: Trade):
-        """Handler per status ordini"""
+        """Handler for order status"""
         order_dict = {
             "orderId": trade.order.orderId,
             "symbol": trade.contract.symbol,
@@ -156,7 +156,7 @@ class IBDashboardHandler:
         
         self.publisher.send_order_update(order_dict)
         
-        # Log importante per ordini
+        # Important log for orders
         if trade.orderStatus.status in ['Filled', 'Cancelled']:
             self.publisher.log(
                 "info", 
@@ -165,13 +165,13 @@ class IBDashboardHandler:
             )
     
     def _process_trades(self, trades: List[Trade]):
-        """Processa trades attivi"""
+        """Processes active trades"""
         for trade in trades:
             if trade.orderStatus.status not in ['Filled', 'Cancelled', 'Inactive']:
                 self.on_order_status(trade)
     
     def on_exec_details(self, trade: Trade, fill):
-        """Handler per dettagli esecuzione"""
+        """Handler for execution details"""
         exec_details = {
             "symbol": trade.contract.symbol,
             "action": fill.execution.side,
@@ -188,7 +188,7 @@ class IBDashboardHandler:
         )
     
     def on_pnl(self, pnl):
-        """Handler per PnL account totale"""
+        """Handler for total account PnL"""
         if pnl:
             self.publisher.send_pnl_update(
                 daily_pnl=float(pnl.dailyPnL) if pnl.dailyPnL else 0,
@@ -197,7 +197,7 @@ class IBDashboardHandler:
             )
     
     def on_pnl_single(self, pnl):
-        """Handler per PnL di singola posizione"""
+        """Handler for single position PnL"""
         if pnl:
             pnl_data = {
                 "conId": pnl.conId,
@@ -207,42 +207,42 @@ class IBDashboardHandler:
                 "position": float(pnl.position) if pnl.position else 0,
                 "value": float(pnl.value) if pnl.value else 0,
             }
-            # Potresti voler gestire PnL per singola posizione
+            # You might want to handle PnL for single position
             logger.debug(f"PnL Single: {pnl_data}")
     
     def on_error(self, reqId, errorCode, errorString, contract):
-        """Handler per errori IB"""
-        # Ignora alcuni errori comuni non critici
+        """Handler for IB errors"""
+        # Ignore some common non-critical errors
         if errorCode in [2104, 2106, 2158]:  # Market data farm messages
             return
             
         error_msg = f"IB Error {errorCode}: {errorString}"
         
-        if errorCode < 2000:  # Errori critici
+        if errorCode < 2000:  # Critical errors
             logger.error(error_msg)
             self.publisher.send_error(error_msg, errorCode, {"reqId": reqId, "contract": str(contract)})
             self.publisher.log("error", error_msg)
         else:  # Warning
             logger.warning(error_msg)
-            if errorCode not in [2104, 2106, 2107, 2108]:  # Filtra messaggi di market data farm
+            if errorCode not in [2104, 2106, 2107, 2108]:  # Filter market data farm messages
                 self.publisher.log("warning", error_msg)
     
     def on_connected(self):
-        """Handler per connessione stabilita"""
+        """Handler for connection established"""
         self.publisher.log("success", "Connected to Interactive Brokers")
         self._send_initial_state()
     
     def on_disconnected(self):
-        """Handler per disconnessione"""
+        """Handler for disconnection"""
         self.publisher.log("error", "Disconnected from Interactive Brokers")
         self.publisher.send_error("IB Connection lost")
     
     def send_trade_signal(self, signal_type: str, details: Dict[str, Any]):
-        """Wrapper per inviare segnali di trading"""
+        """Wrapper to send trading signals"""
         self.publisher.send_trade_signal(signal_type, details)
     
     def handle_dashboard_command(self, command: Dict[str, Any]):
-        """Gestisce comandi ricevuti dalla dashboard"""
+        """Handles commands received from dashboard"""
         cmd_type = command.get("type")
         payload = command.get("payload", {})
         
@@ -260,7 +260,7 @@ class IBDashboardHandler:
             logger.warning(f"Unknown command: {cmd_type}")
     
     def _close_all_positions(self):
-        """Chiude tutte le posizioni aperte"""
+        """Closes all open positions"""
         positions = self.ib.positions()
         for pos in positions:
             if pos.position != 0:
@@ -273,17 +273,17 @@ class IBDashboardHandler:
                 self.publisher.log("warning", f"Closing position: {pos.contract.symbol} {pos.position} shares")
     
     def _cancel_all_orders(self):
-        """Cancella tutti gli ordini aperti"""
+        """Cancels all open orders"""
         self.ib.reqGlobalCancel()
         self.publisher.log("warning", "All open orders cancelled by dashboard command")
     
     def _send_status_update(self):
-        """Invia update completo dello status"""
+        """Sends full status update"""
         self._send_initial_state()
     
     def _update_risk_limit(self, payload: Dict[str, Any]):
-        """Aggiorna limiti di rischio"""
-        # Implementa la logica per aggiornare i limiti di rischio
+        """Updates risk limits"""
+        # Implement logic to update risk limits
         new_limit = payload.get("max_risk")
         if new_limit:
             config.MAX_RISK_PER_TRADE = new_limit

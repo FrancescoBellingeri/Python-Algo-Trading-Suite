@@ -37,7 +37,7 @@ REDIS_COMMANDS_CHANNEL = os.getenv('REDIS_COMMANDS_CHANNEL', 'trading-bot-comman
 
 # === WEBSOCKET SERVER ===
 WEBSOCKET_ENABLED = os.getenv('WEBSOCKET_ENABLED', 'true').lower() == 'true'
-WEBSOCKET_UPDATE_INTERVAL = float(os.getenv('WEBSOCKET_UPDATE_INTERVAL', '1.0'))  # secondi
+WEBSOCKET_UPDATE_INTERVAL = float(os.getenv('WEBSOCKET_UPDATE_INTERVAL', '1.0'))  # seconds
 
 # === DASHBOARD SETTINGS ===
 SEND_POSITIONS = os.getenv('SEND_POSITIONS', 'true').lower() == 'true'
