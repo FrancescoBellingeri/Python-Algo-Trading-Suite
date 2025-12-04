@@ -10,7 +10,6 @@ from src.data_handler import DataHandler
 from src.database import DatabaseHandler
 from src.indicator_calculator import IndicatorCalculator
 from src.execution_handler import ExecutionHandler
-from src.ib_dashboard_handler import IBDashboardHandler
 from src.redis_publisher import redis_publisher
 from src.logger import logger
 import config
@@ -51,10 +50,6 @@ class TradingBot:
                 raise Exception("Unable to connect to IB")
             
             if config.WEBSOCKET_ENABLED and redis_publisher.enabled:
-                self.dashboard_handler = IBDashboardHandler(self.connector.ib)
-                
-                # Setup callback for dashboard commands
-                redis_publisher.set_command_callback(self.handle_dashboard_command)
                 
                 logger.info("✅ Dashboard integration activated")
                 redis_publisher.log("success", "Dashboard integration active")
@@ -186,6 +181,11 @@ class TradingBot:
 
             # --- GAP CHECK LOGIC ---
             if self.in_position:
+                if self.execution.current_stop_order:
+                    logger.info("✅ Stop Loss already active. Skipping restore.")
+                    redis_publisher.log("success", "✅ Stop Loss already active. Skipping restore.")
+                    return
+                
                 last_sl_price = self.load_overnight_state()
                 
                 if last_sl_price:
@@ -220,9 +220,17 @@ class TradingBot:
                         logger.info("✅ Price above old SL. Position remains open.")
                         redis_publisher.log("success", "✅ No critical Gap. Position maintained.")
                         
-                        self.execution.place_stop_loss(last_sl_price) 
+                        success = self.execution.place_stop_loss(last_sl_price)
+                        if success:
+                            redis_publisher.log("success", f"✅ Overnight SL restored at {last_sl_price}")
+                        else:
+                            redis_publisher.send_error("Failed to restore Overnight SL")
                 else:
-                    logger.info("No saved SL state found.")
+                    logger.warning("⚠️ No saved SL found inside routine. Using ATR.")
+                    redis_publisher.log("warning", "⚠️ No saved SL found inside routine. Using ATR.")
+                    emerg_price = self.execution._calculate_emergency_stop(df)
+                    if emerg_price:
+                        self.execution.place_stop_loss(emerg_price)
             
         except Exception as e:
             logger.error(f"Error in pre-market routine: {e}")
@@ -387,125 +395,7 @@ class TradingBot:
         except Exception as e:
             logger.error(f"Error in on_new_candle: {e}")
             redis_publisher.send_error(f"Candle processing error: {str(e)}")
-
-    def handle_dashboard_command(self, command: dict):
-        """
-        Handle commands received from dashboard via Redis.
-        """
-        cmd_type = command.get("type")
-        payload = command.get("payload", {})
-        
-        logger.info(f"📥 Command received from dashboard: {cmd_type}")
-        redis_publisher.log("info", f"Command received: {cmd_type}")
-        
-        try:
-            if cmd_type == "stop":
-                self.handle_stop_command()
-                
-            elif cmd_type == "pause":
-                self.handle_pause_command()
-                
-            elif cmd_type == "resume":
-                self.handle_resume_command()
-                
-            elif cmd_type == "status":
-                self.send_system_status()
-                if self.dashboard_handler:
-                    self.dashboard_handler._send_initial_state()
-                    
-            elif cmd_type == "close_positions":
-                self.handle_close_positions()
-                
-            elif cmd_type == "cancel_orders":
-                self.handle_cancel_orders()
-                
-            elif cmd_type == "update_risk":
-                new_risk = payload.get("max_risk")
-                if new_risk:
-                    config.MAX_RISK_PER_TRADE = new_risk
-                    redis_publisher.log("info", f"Risk limit updated to {new_risk}")
-                    
-            elif cmd_type == "force_update":
-                # Force data update
-                self.force_data_update()
-                
-            else:
-                logger.warning(f"Command not recognized: {cmd_type}")
-                redis_publisher.log("warning", f"Command not recognized: {cmd_type}")
-                
-        except Exception as e:
-            logger.error(f"Error handling command {cmd_type}: {e}")
-            redis_publisher.send_error(f"Command execution error: {str(e)}")
     
-    def handle_stop_command(self):
-        """Handle stop command."""
-        logger.warning("⛔ STOP command received - Shutting down bot")
-        redis_publisher.log("warning", "⛔ Bot stopped by dashboard command")
-        self.is_running = False
-        
-        # Close positions if requested
-        if self.in_position:
-            redis_publisher.log("warning", "Closing positions before shutdown...")
-            # self.execution.close_all_positions()
-    
-    def handle_pause_command(self):
-        """Handle pause command."""
-        logger.info("⏸️ PAUSE command received")
-        redis_publisher.log("info", "⏸️ Bot paused")
-        self.is_running = False
-        redis_publisher.publish("bot-status", {"status": "paused"})
-    
-    def handle_resume_command(self):
-        """Handle resume command."""
-        logger.info("▶️ RESUME command received")
-        redis_publisher.log("info", "▶️ Bot resumed")
-        self.is_running = True
-        redis_publisher.publish("bot-status", {"status": "running"})
-    
-    def handle_close_positions(self):
-        """Close all open positions."""
-        logger.warning("Position closure requested by dashboard")
-        redis_publisher.log("warning", "📉 Position closure from dashboard")
-        
-        if self.execution and self.execution.has_position():
-            # self.execution.close_all_positions()
-            self.in_position = False
-            redis_publisher.publish("position-status", {"has_position": False})
-        else:
-            redis_publisher.log("info", "No positions to close")
-    
-    def handle_cancel_orders(self):
-        """Cancel all open orders."""
-        logger.warning("Order cancellation requested by dashboard")
-        redis_publisher.log("warning", "❌ Order cancellation from dashboard")
-        
-        if self.connector:
-            self.connector.ib.reqGlobalCancel()
-            redis_publisher.log("success", "All orders cancelled")
-    
-    def force_data_update(self):
-        """Force immediate data update."""
-        logger.info("Data update forced by dashboard")
-        redis_publisher.log("info", "🔄 Data update forced")
-        
-        try:
-            df = self.data_handler.update_data()
-            if df is not None and not df.empty:
-                df = self.indicator_calculator.calculate_incremental(df)
-                redis_publisher.log("success", "✅ Data updated successfully")
-                
-                # Send latest data
-                last_row = df.iloc[-1]
-                candle_data = {
-                    "time": datetime.now().isoformat(),
-                    "close": float(last_row.get('Close', 0)),
-                    "volume": float(last_row.get('Volume', 0)),
-                    "rsi": float(last_row.get('RSI', 0))
-                }
-                redis_publisher.publish("data-update", candle_data)
-        except Exception as e:
-            redis_publisher.send_error(f"Forced update error: {str(e)}")
-
     def save_overnight_state(self, stop_loss_price):
         """Save stop loss to file for next morning."""
         state = {

@@ -1,4 +1,8 @@
 import pandas as pd
+import os
+from datetime import datetime, time
+import json
+from zoneinfo import ZoneInfo
 from ib_insync import Stock, MarketOrder, StopOrder
 from src.logger import logger
 from src.redis_publisher import redis_publisher
@@ -450,34 +454,41 @@ class ExecutionHandler:
                 logger.warning("⚠️ WARNING: Open position WITHOUT detected Stop Loss!")
                 redis_publisher.log("error", "⚠️ WARNING: Position WITHOUT Stop Loss!")
                 
-                stop_price = self._calculate_emergency_stop(df)
+                ny_tz = ZoneInfo("America/New_York")
+                now = datetime.now(ny_tz)
+                market_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
+                market_close = now.replace(hour=16, minute=0, second=0, microsecond=0)
+                
+                is_market_hours = market_open <= now <= market_close
 
-                if stop_price:
-                    success = self.place_stop_loss(stop_price)
-                    if success:
-                        logger.info(f"✅ Emergency Stop Loss placed @ ${stop_price:.2f}")
-                        redis_publisher.log("success", f"✅ Emergency Stop Loss activated @ ${stop_price:.2f}")
-                    else:
-                        logger.error("❌ Emergency Stop Loss placement FAILED!")
-                        redis_publisher.send_error("CRITICAL: Unable to place Emergency Stop Loss")
-                        
-                        redis_publisher.publish("risk-alert", {
-                            "type": "stop_loss_failed",
-                            "position_size": self.position_size,
-                            "entry_price": self.entry_price,
-                            "risk": "unlimited"
-                        })
-                else:
-                    logger.error("❌ Unable to calculate stop price!")
-                    redis_publisher.send_error("Unable to calculate Stop Loss price")
+                saved_sl_price = None
+                if os.path.exists("bot_state.json"):
+                    try:
+                        with open("bot_state.json", "r") as f:
+                            state = json.load(f)
+                            saved_sl_price = state.get("last_stop_loss")
+                    except:
+                        pass
+
+                if is_market_hours:
+                    logger.warning("🕒 Bot restarted during market hours. Restoring protection immediately.")
                     
-                    redis_publisher.publish("risk-alert", {
-                        "type": "no_stop_loss",
-                        "position_size": self.position_size,
-                        "entry_price": self.entry_price,
-                        "risk": "unlimited"
-                    })
-            
+                    target_sl = saved_sl_price if saved_sl_price else self._calculate_emergency_stop(df)
+                    
+                    if target_sl:
+                        self.place_stop_loss(target_sl)
+                    else:
+                        logger.error("❌ CRITICAL: Could not calculate Stop Loss during market hours!")
+
+                else:
+                    logger.info("🕒 Pre-market detected. Holding position naked until 09:30 Routine.")
+                    redis_publisher.log("info", "⏸️ Position found. Waiting for 09:30 to restore SL (Gap Check Pending).")
+                    
+                    # Salviamo comunque il prezzo previsto in memoria per averlo pronto
+                    if saved_sl_price:
+                        self.stop_price = saved_sl_price 
+                        logger.info(f"Target SL loaded from file: {saved_sl_price} (Pending activation)")
+
             # Broadcast initial state
             self.broadcast_position_update()
             
