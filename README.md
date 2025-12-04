@@ -76,16 +76,36 @@ This is the core of the engine. Position sizing is not fixed but strictly mathem
 
 ## 🛠️ Tech Stack & Architecture
 
-The project is built with a focus on modularity and data analysis.
+The project is built with a focus on modularity, scalability, and real-time data analysis.
+
+### Core Trading Engine
 
 - **Data Processing:** `Pandas`, `NumPy` (Vectorized operations for speed).
 - **Analysis:** `Pandas-TA` (Technical Analysis library), `QuantStats` (Financial metrics).
 - **Visualization:** `Matplotlib`, `Seaborn`.
 - **Live Execution:** `ib_insync` (Asynchronous wrapper for Interactive Brokers TWS API).
+- **Logging:** `loguru` (Structured logging with rotation).
+
+### Backend API (`/backend`)
+
+- **Framework:** `FastAPI` (High-performance async REST API).
+- **Database:** `PostgreSQL` (Relational database for trade history and positions).
+- **ORM:** `SQLAlchemy` (Database abstraction layer).
+- **Real-time Communication:** `Redis` (Pub/Sub for WebSocket events).
+- **WebSockets:** Native FastAPI WebSocket support for live data streaming.
+- **Validation:** `Pydantic` (Data validation and serialization).
+
+### Dashboard (`/dashboard`)
+
+- **Framework:** `Vue 3` (Composition API for reactive UI).
+- **Build Tool:** `Vite` (Lightning-fast HMR and bundling).
+- **Styling:** `TailwindCSS v4` (Utility-first CSS framework).
+- **Icons:** `lucide-vue-next` (Modern icon library).
+- **Real-time Updates:** WebSocket client for live position and P&L tracking.
 
 ## 🏗️ Project Architecture
 
-The repository is structured to enforce a clean separation between **Data Engineering**, **Research (Backtesting)**, and **Production (Live Trading)**.
+The repository is structured to enforce a clean separation between **Data Engineering**, **Research (Backtesting)**, **Production (Live Trading)**, **Backend API**, and **Dashboard**.
 
 ```bash
 ├── backtesting/                # Simulation & Research Engine
@@ -102,13 +122,139 @@ The repository is structured to enforce a clean separation between **Data Engine
 │
 ├── live/                       # Production Trading Environment
 │   ├── src/                    # Live execution logic & order management system
+│   │   ├── bot.py              # Main trading bot orchestrator
+│   │   ├── execution_handler.py # Order execution and position management
+│   │   ├── redis_publisher.py  # Real-time event publishing to Redis
+│   │   └── database_handler.py # Trade persistence to PostgreSQL
 │   ├── config.py               # Strategy parameters (RISK_PCT, LEVERAGE, SYMBOLS)
 │   ├── .env.test               # Example .env configuration to start live trading
 │   ├── requirements.txt        # Project dependencies for live trading
-│   ├── logs/                   # Execution logs for audit trails
+│   └── logs/                   # Execution logs for audit trails
+│
+├── backend/                    # FastAPI Backend (REST + WebSocket)
+│   ├── app/
+│   │   ├── main.py             # FastAPI application entry point
+│   │   ├── database.py         # PostgreSQL connection & session management
+│   │   ├── models.py           # SQLAlchemy ORM models (Trades, Positions, Accounts)
+│   │   ├── routers/            # API endpoints (trades, positions, accounts)
+│   │   └── services/           # Business logic layer (Redis consumer, WebSocket manager)
+│   ├── requirements.txt        # Backend dependencies (FastAPI, SQLAlchemy, Redis, etc.)
+│   └── .env                    # Backend environment variables (DB credentials, Redis URL)
+│
+├── dashboard/                  # Vue 3 Real-time Dashboard
+│   ├── src/
+│   │   ├── App.vue             # Root component
+│   │   ├── components/         # Reusable UI components (PositionCard, TradeTable, etc.)
+│   │   ├── services/           # API client & WebSocket connection logic
+│   │   └── assets/             # Static assets (CSS, images)
+│   ├── package.json            # Frontend dependencies (Vue 3, Vite, TailwindCSS)
+│   ├── vite.config.js          # Vite build configuration
+│   ├── tailwind.config.js      # TailwindCSS configuration
+│   └── .env.development        # Development environment variables (API URL)
 │
 ├── output/                     # Performance Artifacts
 │   ├── equity_curve.png        # Equity curve visualizations
 │   ├── trades_log.csv          # Detailed trade-by-trade execution logs
 │   └── stats_strategy.csv      # Computed risk metrics
 ```
+
+---
+
+## 🚀 Getting Started
+
+### Prerequisites
+
+1. **Interactive Brokers Account** with TWS (Trader Workstation) or IB Gateway installed.
+2. **Python 3.13+** installed on your system.
+3. **Node.js 20+** for the dashboard.
+4. **PostgreSQL** database running locally or remotely.
+5. **Redis** server running (for real-time communication).
+
+### Configuration
+
+Before running the project, you need to configure the environment variables:
+
+#### 1. Trading Bot Configuration (`/live/.env`)
+
+Create a `.env` file in the `live/` directory (use `.env.test` as a template):
+
+```bash
+# Interactive Brokers Connection
+IB_HOST=127.0.0.1
+IB_PORT=7497  # 7497 for paper trading, 7496 for live
+IB_CLIENT_ID=1
+
+# Database
+DATABASE_URL=postgresql://user:password@localhost:5432/trading_db
+
+# Redis
+REDIS_URL=redis://localhost:6379/0
+
+# Strategy Parameters
+RISK_PCT=0.02
+LEVERAGE=1.0
+```
+
+#### 2. Backend Configuration (`/backend/.env`)
+
+```bash
+# Database
+DATABASE_URL=postgresql://user:password@localhost:5432/trading_db
+
+# Redis
+REDIS_URL=redis://localhost:6379/0
+
+# API Settings
+CORS_ORIGINS=http://localhost:5173
+```
+
+#### 3. Dashboard Configuration (`/dashboard/.env.development`)
+
+```bash
+VITE_API_BASE_URL=http://localhost:8000
+VITE_WS_URL=ws://localhost:8000/ws
+```
+
+### Running the Project Locally
+
+**IMPORTANT:** Before starting the trading bot, make sure **TWS (Trader Workstation)** or **IB Gateway** is running on your computer and configured to accept API connections.
+
+Open **3 separate terminal windows** and run the following commands:
+
+#### Terminal 1: Start the Trading Bot
+
+```bash
+cd live
+python -m venv venv
+venv\Scripts\activate
+pip install -r requirements.txt
+python -m main
+```
+
+#### Terminal 2: Start the FastAPI Backend
+
+```bash
+cd backend
+python -m venv venv
+venv\Scripts\activate
+pip install -r requirements.txt
+python -m app.run_server
+```
+
+The backend will be available at `http://localhost:8000`
+
+#### Terminal 3: Start the Dashboard
+
+```bash
+cd dashboard
+npm install
+npm run dev
+```
+
+The dashboard will be available at `http://localhost:5173`
+
+### Verification
+
+1. **Check TWS Connection:** The bot should log "Connected to Interactive Brokers" if TWS is running.
+2. **Check Backend:** Visit `http://localhost:8000/docs` to see the FastAPI Swagger documentation.
+3. **Check Dashboard:** Open `http://localhost:5173` to see real-time positions and P&L updates.
