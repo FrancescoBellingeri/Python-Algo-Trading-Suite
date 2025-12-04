@@ -5,7 +5,7 @@ import threading
 import logging
 from typing import Optional, Callable, Dict, Any
 
-# Configura logger per questo modulo
+# Configure logger for this module
 logger = logging.getLogger("redis_client")
 
 class RedisManager:
@@ -14,10 +14,10 @@ class RedisManager:
         self.port = port
         self.db = db
         
-        # Client asincrono per operazioni REST API (Get/Set state)
+        # Async client for REST API operations (Get/Set state)
         self.async_client: Optional[aioredis.Redis] = None
         
-        # Client sincrono per il thread di ascolto (PubSub)
+        # Sync client for listening thread (PubSub)
         self.sync_client: Optional[redis.Redis] = None
         
         self.pubsub = None
@@ -25,9 +25,9 @@ class RedisManager:
         self._is_running = False
 
     async def connect(self) -> bool:
-        """Inizializza le connessioni Redis (Async e Sync)"""
+        """Initialize Redis connections (Async and Sync)"""
         try:
-            # 1. Connessione Async
+            # 1. Async Connection
             self.async_client = aioredis.Redis(
                 host=self.host,
                 port=self.port,
@@ -37,7 +37,7 @@ class RedisManager:
             )
             await self.async_client.ping()
 
-            # 2. Connessione Sync (per PubSub Thread)
+            # 2. Sync Connection (for PubSub Thread)
             self.sync_client = redis.Redis(
                 host=self.host,
                 port=self.port,
@@ -55,28 +55,28 @@ class RedisManager:
             return False
 
     async def disconnect(self):
-        """Chiude tutte le connessioni in modo pulito"""
+        """Closes all connections cleanly"""
         self._is_running = False
         
-        # Chiudi PubSub
+        # Close PubSub
         if self.pubsub:
             try:
                 self.pubsub.close()
             except Exception:
                 pass
 
-        # Chiudi client Async
+        # Close Async client
         if self.async_client:
             await self.async_client.close()
 
-        # Chiudi client Sync
+        # Close Sync client
         if self.sync_client:
             self.sync_client.close()
             
         logger.info("Redis connections closed")
 
     async def get_state(self, key: str) -> Optional[Dict]:
-        """Recupera stato salvato (Async)"""
+        """Retrieve saved state (Async)"""
         if not self.async_client:
             return None
         try:
@@ -87,7 +87,7 @@ class RedisManager:
             return None
 
     async def set_state(self, key: str, value: Dict, expire: int = None) -> bool:
-        """Salva stato (Async)"""
+        """Save state (Async)"""
         if not self.async_client:
             return False
         try:
@@ -102,7 +102,7 @@ class RedisManager:
             return False
 
     async def publish(self, channel: str, message: Dict) -> bool:
-        """Pubblica messaggio su un canale (Async)"""
+        """Publish message to a channel (Async)"""
         if not self.async_client:
             return False
         try:
@@ -115,8 +115,8 @@ class RedisManager:
 
     def subscribe_sync(self, channel: str, callback: Callable[[Dict], None]):
         """
-        Avvia un thread separato che ascolta i messaggi Redis
-        e invoca la callback quando ne riceve uno.
+        Starts a separate thread that listens to Redis messages
+        and invokes the callback when it receives one.
         """
         if not self.sync_client:
             logger.error("Sync client not initialized")
@@ -129,10 +129,10 @@ class RedisManager:
         def _listen_loop():
             logger.info(f"🎧 Redis Listener started on channel: {channel}")
             
-            # Loop infinito di ascolto
+            # Infinite listening loop
             while self._is_running:
                 try:
-                    # listen() è un generatore bloccante, ma con timeout interno
+                    # listen() is a blocking generator, but with internal timeout
                     for message in self.pubsub.listen():
                         if not self._is_running:
                             break
@@ -149,7 +149,7 @@ class RedisManager:
                 except Exception as e:
                     if self._is_running:
                         logger.error(f"Error in Redis listener loop: {e}")
-                        # Breve pausa per evitare spam di errori se Redis è giù
+                        # Brief pause to avoid error spam if Redis is down
                         import time
                         time.sleep(2)
                     else:
@@ -157,7 +157,7 @@ class RedisManager:
             
             logger.info("🎧 Redis Listener stopped")
 
-        # Avvia thread daemon (si chiude quando il processo principale muore)
+        # Start daemon thread (closes when main process dies)
         self.subscriber_thread = threading.Thread(
             target=_listen_loop, 
             daemon=True, 

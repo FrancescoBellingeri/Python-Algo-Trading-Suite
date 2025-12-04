@@ -506,35 +506,6 @@ class TradingBot:
         except Exception as e:
             redis_publisher.send_error(f"Forced update error: {str(e)}")
 
-    async def monitor_pnl_task(self):
-        """
-        Background task sending PnL to Redis every second.
-        Does not block trading because uses asyncio.sleep.
-        """
-        logger.info("Starting PnL monitoring in background...")
-        
-        while self.is_running:
-            try:
-                # Read values from pnl_stream object that IB updates in real-time
-                if self.pnl_stream:
-                    pnl_data = {
-                        "account": self.account_id,
-                        "dailyPnL": self.pnl_stream.dailyPnL,      # Daily PnL
-                        "unrealizedPnL": self.pnl_stream.unrealizedPnL, # Unrealized PnL (open positions)
-                        "realizedPnL": self.pnl_stream.realizedPnL,     # Realized PnL
-                        "timestamp": datetime.now().isoformat()
-                    }
-                    
-                    # Publish to dedicated channel for WebSocket server
-                    redis_publisher.publish("pnl-update", pnl_data)
-                
-                # Wait 1 second before next send (to not clog Redis)
-                await asyncio.sleep(2)
-                
-            except Exception as e:
-                logger.error(f"Error in PnL monitoring: {e}")
-                await asyncio.sleep(5) # Longer wait in case of error
-
     def save_overnight_state(self, stop_loss_price):
         """Save stop loss to file for next morning."""
         state = {
@@ -575,9 +546,7 @@ class TradingBot:
         if not await self.initialize_components():
             redis_publisher.send_error("Initialization failed - bot stopped")
             return
-        
-        asyncio.create_task(self.monitor_pnl_task())
-        
+                
         # Define target times (New York Time)
         ny_tz = ZoneInfo("America/New_York")
         

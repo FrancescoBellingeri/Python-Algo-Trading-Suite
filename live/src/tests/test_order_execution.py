@@ -5,41 +5,41 @@ from ib_insync import MarketOrder, StopOrder
 
 def test_bracket_order_structure():
     """
-    Verifica che vengano creati 2 ordini (Parent e Child) e che siano collegati correttamente.
+    Verifies that 2 orders (Parent and Child) are created and correctly linked.
     """
     mock_conn = MagicMock()
-    # Simuliamo che placeOrder restituisca un oggetto "Trade" finto con status Filled
+    # Simulate that placeOrder returns a fake "Trade" object with status Filled
     mock_trade = MagicMock()
     mock_trade.orderStatus.status = 'Filled'
     mock_trade.orderStatus.avgFillPrice = 100.0
     
-    # Simuliamo che ogni chiamata a placeOrder restituisca questo trade
+    # Simulate every call to placeOrder returning this trade
     mock_conn.ib.placeOrder.return_value = mock_trade
-    # Simuliamo un ID finto
+    # Simulate a fake ID
     mock_conn.ib.client.getReqId.return_value = 12345
     
     handler = ExecutionHandler(mock_conn)
     
-    # Eseguiamo
+    # Execute
     handler.open_long_position(shares=100, stop_price=95.0)
     
-    # VERIFICHE
-    # placeOrder deve essere stato chiamato 2 volte (Parent + Stop)
+    # VERIFICATIONS
+    # placeOrder must have been called 2 times (Parent + Stop)
     assert mock_conn.ib.placeOrder.call_count == 2
     
-    # Recuperiamo gli argomenti con cui è stato chiamato
+    # Retrieve the arguments with which it was called
     calls = mock_conn.ib.placeOrder.call_args_list
     
-    # Primo ordine (Parent)
-    parent_order_arg = calls[0][0][0] # Primo argomento della prima chiamata
+    # First order (Parent)
+    parent_order_arg = calls[0][0][0] # First argument of the first call
     assert isinstance(parent_order_arg, MarketOrder)
     assert parent_order_arg.action == 'BUY'
     assert parent_order_arg.totalQuantity == 100
-    assert parent_order_arg.transmit is False # CRITICO: Non deve trasmettere subito
+    assert parent_order_arg.transmit is False # CRITICAL: Must not transmit immediately
     
-    # Secondo ordine (Stop)
+    # Second order (Stop)
     stop_order_arg = calls[1][0][0]
     assert isinstance(stop_order_arg, StopOrder)
     assert stop_order_arg.action == 'SELL'
     assert stop_order_arg.auxPrice == 95.0
-    assert stop_order_arg.transmit is True # L'ultimo trasmette
+    assert stop_order_arg.transmit is True # The last one transmits

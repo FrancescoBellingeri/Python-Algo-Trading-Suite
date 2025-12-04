@@ -5,7 +5,7 @@ import asyncio
 from datetime import datetime
 from dotenv import load_dotenv
 
-# Importa i router e i servizi
+# Import routers and services
 from .routers import api, websocket
 from .services import redis_manager, manager, system_status
 
@@ -26,7 +26,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include i Router
+# Include Routers
 app.include_router(api.router)
 app.include_router(websocket.router)
 
@@ -39,24 +39,24 @@ async def startup_event():
     print("🚀 Starting Trading Server...")
     
     main_loop = asyncio.get_running_loop()
-    websocket.set_main_loop(main_loop) # Passa il loop al router WS
+    websocket.set_main_loop(main_loop) # Pass loop to WS router
     
     system_status["server_start_time"] = datetime.now().isoformat()
     
-    # 1. Connessione Redis
+    # 1. Redis Connection
     connected = await redis_manager.connect()
     system_status["redis_connected"] = connected
     
     if connected:
         print("✅ Redis Connected")
         
-        # Recupera stato precedente
+        # Retrieve previous state
         saved_state = await redis_manager.get_state("trading:current_state")
         if saved_state:
             manager.current_state = saved_state
             print("✅ State Restored")
             
-        # Callback per messaggi dal Bot
+        # Callback for messages from Bot
         def bot_message_handler(message):
             try:
                 system_status["bot_connected"] = True
@@ -65,11 +65,11 @@ async def startup_event():
                 msg_type = message.get("type")
                 payload = message.get("payload", {})
                 
-                # Aggiorna memoria server
+                # Update server memory
                 manager.update_state(msg_type, payload)
                 
                 if main_loop and main_loop.is_running():
-                    # Salva su Redis e Broadcast ai client
+                    # Save to Redis and Broadcast to clients
                     asyncio.run_coroutine_threadsafe(
                         redis_manager.set_state("trading:current_state", manager.current_state),
                         main_loop
@@ -81,7 +81,7 @@ async def startup_event():
             except Exception as e:
                 print(f"Error in handler: {e}")
 
-        # Sottoscrizione
+        # Subscription
         redis_manager.subscribe_sync("trading-bot-channel", bot_message_handler)
 
 @app.on_event("shutdown")

@@ -24,12 +24,10 @@ export function useWebSocket(url = DEFAULT_WS_URL) {
   });
 
   const logs = ref([]);
-  const systemStatus = ref({});
 
   // Reconnection logic
   let reconnectInterval = null;
   let reconnectAttempts = 0;
-  const maxReconnectAttempts = 100;
 
   function connect() {
     if (ws.value?.readyState === WebSocket.OPEN) return;
@@ -99,7 +97,6 @@ export function useWebSocket(url = DEFAULT_WS_URL) {
         break;
 
       case "position_update":
-        console.log("📦 Position Update Received:", payload);
         if (Array.isArray(payload)) {
           // Se è una lista (es. []), prendiamo il primo elemento o null
           activePosition.value = payload.length > 0 ? payload[0] : null;
@@ -119,7 +116,7 @@ export function useWebSocket(url = DEFAULT_WS_URL) {
           id: Date.now() + Math.random(), // ID univoco per v-for key
           timestamp: payload.timestamp || new Date().toLocaleTimeString(),
         });
-        if (logs.value.length > 50) logs.value.shift(); // Tieni solo ultimi 50
+        if (logs.value.length > 50) logs.value.shift();
         break;
     }
   }

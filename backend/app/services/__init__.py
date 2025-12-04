@@ -6,24 +6,24 @@ from ..database import DatabaseHandler
 
 load_dotenv()
 
-# 1. Istanza del WebSocket Manager
+# 1. WebSocket Manager instance
 manager = ConnectionManager()
 
-# 2. Istanza del Redis Client
+# 2. Redis Client instance
 redis_manager = RedisManager(
     host=os.getenv("REDIS_HOST", "localhost"),
     port=int(os.getenv("REDIS_PORT", 6379)),
     db=int(os.getenv("REDIS_DB", 0))
 )
 
-# 3. Istanza del Database Handler
-# Si collegherà automaticamente in base al tuo file database.py
+# 3. Database Handler instance
+# Will connect automatically based on your database.py file
 db_handler = DatabaseHandler()
 
-# Variabili globali di stato sistema
+# Global system status variables
 system_status = {
     "redis_connected": False,
     "bot_connected": False,
     "last_bot_message": None,
-    "server_start_time": None # Verrà settato in main.py
+    "server_start_time": None # Will be set in main.py
 }

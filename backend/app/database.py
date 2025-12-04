@@ -6,21 +6,21 @@ from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy.dialects.postgresql import TIMESTAMP
 from dotenv import load_dotenv
 
-# 1. Caricamento variabili d'ambiente
+# 1. Load environment variables
 load_dotenv()
 
-# 2. Configurazione Logger standard
+# 2. Standard logger configuration
 logger = logging.getLogger("database")
 
-# 3. Base SQLAlchemy
+# 3. SQLAlchemy Base
 Base = declarative_base()
 
 # ====================
-# MODELLI ORM
+# ORM MODELS
 # ====================
 
 class MarketData(Base):
-    """Tabella dati storici candele"""
+    """Historical candle data table"""
     __tablename__ = 'market_data'
 
     timestamp = Column(TIMESTAMP(timezone=True), primary_key=True)
@@ -35,7 +35,7 @@ class MarketData(Base):
     willr_10 = Column(Float, nullable=True)
 
 class Trade(Base):
-    """Tabella storico trade conclusi"""
+    """Completed trades history table"""
     __tablename__ = 'trades'
     
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -55,7 +55,7 @@ class Trade(Base):
 
 class DatabaseHandler:
     def __init__(self):
-        # Usa variabile d'ambiente o fallback
+        # Use environment variable or fallback
         self.db_url = os.getenv("DATABASE_URL", "postgresql://user:password@localhost:5432/trading_bot")
         
         try:
@@ -70,7 +70,7 @@ class DatabaseHandler:
     # --- Market Data Methods ---
 
     def save_candles(self, df, symbol):
-        """Salva candele (senza chiamare Redis)"""
+        """Save candles (without calling Redis)"""
         if df.empty: return False
         
         session = self.Session()
@@ -79,7 +79,7 @@ class DatabaseHandler:
                 ts = row['date']
                 if isinstance(ts, str): ts = pd.to_datetime(ts)
                 
-                # Gestione UTC
+                # UTC handling
                 if ts.tzinfo is None: ts = ts.tz_localize('UTC')
                 else: ts = ts.tz_convert('UTC')
 
@@ -103,13 +103,13 @@ class DatabaseHandler:
             session.close()
 
     def get_latest_data(self, symbol, limit=1000):
-        """Legge dati storici per il bot o grafici"""
+        """Read historical data for bot or charts"""
         query = f"SELECT * FROM market_data WHERE symbol = '{symbol}' ORDER BY timestamp DESC LIMIT {limit}"
         try:
             df = pd.read_sql(query, self.engine)
             if df.empty: return df
             
-            # Converti UTC -> NY Time per compatibilità bot
+            # Convert UTC -> NY Time for bot compatibility
             df['date'] = pd.to_datetime(df['timestamp']).dt.tz_convert('America/New_York')
             df = df.rename(columns={'atr_14': 'ATR_14', 'sma_200': 'SMA_200', 'willr_10': 'WILLR_10'})
             return df.sort_values('date').reset_index(drop=True)
@@ -120,10 +120,10 @@ class DatabaseHandler:
     # --- Trade Methods ---
 
     def save_trade(self, symbol, entry_price, exit_price, quantity, entry_time, exit_time, pnl_dollar, pnl_percent, exit_reason):
-        """Salva trade concluso"""
+        """Save completed trade"""
         session = self.Session()
         try:
-            # Assicura UTC
+            # Ensure UTC
             if hasattr(entry_time, 'tzinfo') and entry_time.tzinfo is None:
                 entry_time = pd.Timestamp(entry_time, tz='UTC')
             if hasattr(exit_time, 'tzinfo') and exit_time.tzinfo is None:
@@ -152,7 +152,7 @@ class DatabaseHandler:
             session.close()
 
     def get_trades(self, limit=50, offset=0, symbol=None):
-        """API: Recupera lista trade"""
+        """API: Retrieve trade list"""
         session = self.Session()
         try:
             query = session.query(Trade)
@@ -176,7 +176,7 @@ class DatabaseHandler:
             session.close()
 
     def get_total_trade_count(self, symbol=None):
-        """API: Conta totale trade"""
+        """API: Count total trades"""
         session = self.Session()
         try:
             query = session.query(Trade)
@@ -186,7 +186,7 @@ class DatabaseHandler:
             session.close()
 
     def calculate_stats(self, symbol=None):
-        """API: Calcola statistiche"""
+        """API: Calculate statistics"""
         session = self.Session()
         try:
             query = session.query(Trade)
@@ -209,7 +209,7 @@ class DatabaseHandler:
             avg_win = (sum(t.pnl_dollar for t in winners) / len(winners)) if winners else 0
             avg_loss = (sum(t.pnl_dollar for t in losers) / len(losers)) if losers else 0
             
-            # Calcolo Drawdown
+            # Drawdown calculation
             cumulative = 0
             peak = 0
             max_dd = 0

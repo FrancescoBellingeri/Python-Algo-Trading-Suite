@@ -6,7 +6,7 @@ from ..services import manager, redis_manager
 
 router = APIRouter()
 
-# Riferimento al loop principale (verrà settato dal main)
+# Reference to main loop (will be set by main)
 main_loop = None
 
 def set_main_loop(loop):
@@ -30,7 +30,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     await manager.send_initial_state(websocket)
                 
                 elif msg_type == "command":
-                    # Invia comando al bot
+                    # Send command to bot
                     command_payload = message.get("payload", {})
                     if main_loop and main_loop.is_running():
                         asyncio.run_coroutine_threadsafe(
@@ -40,7 +40,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     await websocket.send_json({"type": "command-sent", "payload": command_payload})
 
             except json.JSONDecodeError:
-                pass # Ignora JSON brutti
+                pass # Ignore malformed JSON
             except Exception as e:
                 print(f"WS Error processing message: {e}")
                 

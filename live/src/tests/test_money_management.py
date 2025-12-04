@@ -2,20 +2,20 @@ import pytest
 from unittest.mock import MagicMock
 from src.execution_handler import ExecutionHandler
 
-# 1. Creiamo un connector finto (Mock)
-# Serve perché non vogliamo che il test provi a connettersi davvero a IBKR
+# 1. Create a fake connector (Mock)
+# Needed because we don't want the test to actually connect to IBKR
 @pytest.fixture
 def mock_connector():
     connector = MagicMock()
     connector.ib = MagicMock()
     return connector
 
-# 2. Testiamo il calcolo della size (LA COSA PIÙ IMPORTANTE)
+# 2. Test size calculation (THE MOST IMPORTANT THING)
 def test_calculate_position_size_standard(mock_connector):
     handler = ExecutionHandler(mock_connector, capital=100_000)
     
-    # Caso: Entrata 100, Stop 95 (Rischio $5/azione). Rischio totale 1% ($1000).
-    # Calcolo: 1000 / 5 = 200 azioni.
+    # Case: Entry 100, Stop 95 (Risk $5/share). Total risk 1% ($1000).
+    # Calculation: 1000 / 5 = 200 shares.
     size = handler.calculate_position_size(
         entry_price=100,
         stop_loss=95,
@@ -23,16 +23,16 @@ def test_calculate_position_size_standard(mock_connector):
         risk_per_trade_pct=0.01,
         leverage=4
     )
-    assert size == 200, f"Errore calcolo standard. Atteso 200, ottenuto {size}"
+    assert size == 200, f"Standard calculation error. Expected 200, got {size}"
 
 def test_calculate_position_size_leverage_limit(mock_connector):
     handler = ExecutionHandler(mock_connector, capital=10_000)
     
-    # Caso: Stop loss vicinissimo (rischio basso), che suggerirebbe una size enorme.
-    # Entrata 100, Stop 99.9 (Rischio $0.1). Rischio conto $100.
-    # Size teorica rischio = 100 / 0.1 = 1000 azioni.
-    # Valore nozionale = 1000 * 100 = $100,000.
-    # MA abbiamo solo 10k e leva 4 -> Max buying power 40k -> Max 400 azioni.
+    # Case: Very close stop loss (low risk), which would suggest a huge size.
+    # Entry 100, Stop 99.9 (Risk $0.1). Account risk $100.
+    # Theoretical risk size = 100 / 0.1 = 1000 shares.
+    # Notional value = 1000 * 100 = $100,000.
+    # BUT we only have 10k and leverage 4 -> Max buying power 40k -> Max 400 shares.
     
     size = handler.calculate_position_size(
         entry_price=100,
@@ -42,30 +42,30 @@ def test_calculate_position_size_leverage_limit(mock_connector):
         leverage=4
     )
     
-    # Il test deve fallire se il bot prova a comprare più di quanto la leva permette
-    assert size <= 400, f"Il bot ha ignorato la leva massima! Size: {size}"
+    # The test should fail if the bot tries to buy more than leverage allows
+    assert size <= 400, f"The bot ignored max leverage! Size: {size}"
 
 def test_calculate_position_size_zero_division(mock_connector):
     handler = ExecutionHandler(mock_connector)
     
-    # Caso: Stop loss = Entry price (Rischio 0). Non deve crashare (DivisionByZero).
+    # Case: Stop loss = Entry price (Risk 0). Should not crash (DivisionByZero).
     size = handler.calculate_position_size(100, 100, 10000, 0.01)
     
-    assert size == 0, "Il bot doveva restituire 0 size in caso di rischio nullo"
+    assert size == 0, "The bot should have returned 0 size in case of zero risk"
 
 def test_check_entry_logic(mock_connector):
-    """Verifica che non entri se l'ATR è rotto"""
+    """Verify that it doesn't enter if ATR is broken"""
     handler = ExecutionHandler(mock_connector)
     
-    # Simuliamo un dataframe con una riga
+    # Simulate a dataframe with one row
     import pandas as pd
     df = pd.DataFrame([{
         'close': 100, 
         'SMA_200': 90, 
         'WILLR_10': -90, 
-        'ATR_14': 0  # <--- ATR rotto o nullo
+        'ATR_14': 0  # <--- Broken or null ATR
     }])
     
-    # Dovrebbe ritornare False e non crashare
+    # Should return False and not crash
     result = handler.check_entry_signals(df)
     assert result is False

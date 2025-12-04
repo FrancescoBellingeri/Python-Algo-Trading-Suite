@@ -9,12 +9,12 @@ from enum import Enum
 
 class MessageType(str, Enum):
     """Supported message types for WebSocket/Redis"""
-    PRICE_UPDATE = "price_update"       # Alta frequenza (Ticker)
-    POSITION_UPDATE = "position_update" # Cambio stato posizione
-    ACCOUNT_UPDATE = "account_update"   # Cambio liquidità
-    LOG = "log"                         # Messaggi operativi
-    INITIAL_STATE = "initial-state"     # Snapshot all'avvio
-    COMMAND = "command"                 # Dal frontend al bot
+    PRICE_UPDATE = "price_update"       # High frequency (Ticker)
+    POSITION_UPDATE = "position_update" # Position state change
+    ACCOUNT_UPDATE = "account_update"   # Liquidity change
+    LOG = "log"                         # Operational messages
+    INITIAL_STATE = "initial-state"     # Snapshot at startup
+    COMMAND = "command"                 # From frontend to bot
 
 class LogLevel(str, Enum):
     DEBUG = "debug"
@@ -40,23 +40,23 @@ class TickerUpdate(BaseModel):
 
 class AccountInfo(BaseModel):
     """Essential account info"""
-    net_liquidation: float          # Valore totale (Cash + Posizioni)
+    net_liquidation: float          # Total value (Cash + Positions)
     daily_pnl: Optional[float] = 0.0
-    # Rimosso buying_power e total_cash come richiesto
+    # Removed buying_power and total_cash as requested
 
 class Position(BaseModel):
     """Active position details with Strategy Indicators"""
     symbol: str
-    shares: int                     # Quantità
+    shares: int                     # Quantity
     entry_price: float
-    current_price: float            # Prezzo attuale per calcolo PnL UI
+    current_price: float            # Current price for UI PnL calculation
     unrealized_pnl: float
     
-    # Campi specifici della tua strategia (Cruciali per la Dashboard)
+    # Strategy-specific fields (Crucial for Dashboard)
     current_trailing_stop: Optional[float] = None
     current_sma_value: Optional[float] = None
     
-    # Campo calcolato opzionale (es. quanto manca allo stop in %)
+    # Optional calculated field (e.g. how far to stop in %)
     distance_to_stop_pct: Optional[float] = None
 
 class LogMessage(BaseModel):
@@ -98,5 +98,5 @@ class TradeStats(BaseModel):
 
 class WebSocketMessage(BaseModel):
     type: MessageType
-    payload: Dict[str, Any] # Può contenere uno dei modelli sopra (convertito in dict)
+    payload: Dict[str, Any] # Can contain one of the models above (converted to dict)
     timestamp: str
