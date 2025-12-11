@@ -3,7 +3,7 @@ from datetime import datetime
 from sqlalchemy import create_engine, Column, String, Float, Integer
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy.dialects.postgresql import TIMESTAMP
-from config import DATABASE_URL
+from config import ACTIVE_DB_URL
 from src.logger import logger
 from src.redis_publisher import redis_publisher
 
@@ -51,7 +51,7 @@ class Trade(Base):
 class DatabaseHandler:
     def __init__(self):
         # Create Postgres connection engine
-        self.engine = create_engine(DATABASE_URL, echo=False)
+        self.engine = create_engine(ACTIVE_DB_URL, echo=False)
         
         # Automatically create tables if they don't exist
         try:

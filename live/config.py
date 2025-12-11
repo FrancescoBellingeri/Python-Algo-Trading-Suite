@@ -28,6 +28,13 @@ POSTGRES_PORT=os.getenv('POSTGRES_PORT')
 # Complete SQLAlchemy connection string
 POSTGRES_URL = f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
 
+APP_ENV = os.getenv('APP_ENV', 'dev').lower()
+
+if APP_ENV == 'prod':
+    ACTIVE_DB_URL = POSTGRES_URL
+else:
+    ACTIVE_DB_URL = DATABASE_URL
+
 # === REDIS CONFIGURATION ===
 REDIS_HOST = os.getenv('REDIS_HOST', 'localhost')
 REDIS_PORT = int(os.getenv('REDIS_PORT', 6379))

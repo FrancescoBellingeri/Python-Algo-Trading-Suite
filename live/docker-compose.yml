@@ -34,6 +34,7 @@ services:
     env_file:
       - .env
     environment:
+      APP_ENV: ${APP_ENV}
       IB_HOST: ib-gateway
       IB_PORT: 4004
       IB_CLIENT_ID: 99
