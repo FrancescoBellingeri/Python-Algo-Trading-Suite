@@ -3,8 +3,6 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import asyncio
 import ib_insync
-import os
-import json
 from src.ib_connector import IBConnector
 from src.data_handler import DataHandler
 from src.database import DatabaseHandler
@@ -24,9 +22,6 @@ class TradingBot:
         self.indicator_calculator = None
         self.execution = None
         self.db = None
-
-        self.account_id = None
-        self.pnl_stream = None
         
         # Bot state
         self.is_running = True
@@ -50,7 +45,6 @@ class TradingBot:
                 raise Exception("Unable to connect to IB")
             
             if config.WEBSOCKET_ENABLED and redis_publisher.enabled:
-                
                 logger.info("✅ Dashboard integration activated")
                 redis_publisher.log("success", "Dashboard integration active")
             
@@ -60,75 +54,102 @@ class TradingBot:
             self.execution = ExecutionHandler(self.connector, capital=25000)
             self.db = DatabaseHandler()
 
-            self.account_id = self.connector.ib.managedAccounts()[0]
-            self.pnl_stream = self.connector.ib.reqPnL(self.account_id)
-
             if not self.execution.update_capital():
                 logger.error("Capital update failed. Bot stopping for safety.")
                 redis_publisher.send_error("Capital update failed")
                 return False
-            
-            # Send capital to dashboard
-            capital_info = {
-                "available_capital": self.execution.capital,
-                "max_risk_per_trade": self.execution.base_risk,
-                "position_size_limit": self.execution.capital * self.execution.base_risk
-            }
-            redis_publisher.publish("capital-update", capital_info)
             
             df = self.data_handler.download_historical_data()
             if df is None or df.empty:
                 logger.error("Data update error")
                 redis_publisher.send_error("Error retrieving df pre sync")
 
-            position_info = self.execution.sync_position_state(df)
+            position_info = self.sync_position_state()
             if position_info:
                 self.in_position = True
                 logger.warning(f"⚠️ Bot started with open position of {position_info['shares']} shares")
                 redis_publisher.log("warning", f"Bot started with open position: {position_info['shares']} shares")
-
-                # Send position info to dashboard
-                redis_publisher.publish("position-status", {
-                    "has_position": True,
-                    "shares": position_info['shares'],
-                    "entry_price": position_info.get('avg_price', 0)
-                })
             else:
                 self.in_position = False
                 logger.info("✅ Bot started without open positions")
                 redis_publisher.log("success", "Bot started without open positions")
-                redis_publisher.publish("position-status", {"has_position": False})
             
             logger.info("All components initialized successfully")
             redis_publisher.log("success", "✅ All components initialized")
 
-            # Send system status to dashboard
-            self.send_system_status()
+            self.connector._send_account_info()
 
             return True
-            
         except Exception as e:
             logger.error(f"Initialization error: {e}")
             redis_publisher.send_error(f"Initialization error: {str(e)}")
             return False
-    
-    def send_system_status(self):
-        """Send complete system status to dashboard."""
-        status = {
-            "bot_status": "running" if self.is_running else "stopped",
-            "connection_status": "connected" if self.connector else "disconnected",
-            "in_position": self.in_position,
-            "market_hours": self.is_market_open(),
-            "uptime_seconds": (datetime.now() - self.bot_start_time).total_seconds(),
-            "config": {
-                "symbol": config.SYMBOL,
-                "exchange": config.EXCHANGE,
-                "max_risk": config.MAX_RISK_PER_TRADE,
-                "paper_trading": config.IB_PORT == 7497
-            }
-        }
-        redis_publisher.publish("system-status", status)
-    
+   
+    def sync_position_state(self):
+        """
+        Synchronizes local state with IB at startup.
+        """
+        try:
+            logger.info("🔄 Position state synchronization...")
+            redis_publisher.log("info", "🔄 Synchronizing positions with IB...")
+            
+            ib = self.connector.ib
+
+            # 1. Find position
+            positions = ib.positions()
+            target_pos = None
+            for p in positions:
+                if p.contract.symbol == config.SYMBOL and p.position > 0:
+                    target_pos = p
+                    break
+            
+            if not target_pos:
+                logger.info("No open position on IB.")
+                redis_publisher.log("info", "✅ No open position detected")
+
+                self.current_position = None
+                self.position_size = 0
+                self.entry_price = None
+                self.stop_price = None
+                self.current_stop_order = None
+
+                self.execution.broadcast_position_update()
+                return None
+            
+            # 2. Update state
+            self.in_position = True
+            self.execution.position_size = target_pos.position
+            self.execution.entry_price = target_pos.avgCost
+            logger.info(f"Found position: {self.execution.position_size} shares @ avg ${self.execution.entry_price:.2f}")
+            redis_publisher.log("warning", f"⚠️ EXISTING POSITION: {self.execution.position_size} shares @ ${self.execution.entry_price:.2f}")
+            
+            # 3. Find active stop order
+            open_trades = ib.openTrades()
+            
+            for trade in open_trades:
+                # Trade has both .contract and .order
+                if (trade.contract.symbol == config.SYMBOL and 
+                    trade.order.orderType in ['STP', 'TRAIL'] and 
+                    trade.order.action == 'SELL'):
+                    
+                    self.execution.current_stop_order = trade.order  # Save Order, not Trade
+                    self.execution.stop_price = trade.order.auxPrice
+                    logger.info(f"Found active Stop Loss: ID {trade.order.orderId} @ ${trade.order.auxPrice}")
+                    redis_publisher.log("success", f"✅ Active Stop Loss found @ ${trade.order.auxPrice:.2f}")
+
+                    break
+
+            # Broadcast initial state
+            self.execution.broadcast_position_update()
+            
+            return {'shares': self.execution.position_size}
+            
+        except Exception as e:
+            logger.error(f"Sync error: {e}")
+            redis_publisher.send_error(f"Synchronization error: {str(e)}")
+            
+            return None
+
     def is_market_open(self):
         """Check if market is open."""
         now = datetime.now(ZoneInfo("America/New_York"))
@@ -144,11 +165,10 @@ class TradingBot:
         logger.info("=" * 50)
 
         redis_publisher.log("info", "🔔 Start pre-market routine")
-        redis_publisher.publish("market-event", {"type": "pre-market", "time": datetime.now().isoformat()})
         
         try:
             # Check if there is an open position from yesterday
-            self.get_open_positions()
+            self.sync_position_state()
             
             # 1. Update historical data
             logger.info("1. Updating historical data...")
@@ -162,171 +182,23 @@ class TradingBot:
             
             self.indicator_calculator.calculate_all(df)
 
-            # Send latest indicators to dashboard
-            if not df.empty:
-                last_row = df.iloc[-1]
-                indicators = {
-                    "rsi": float(last_row.get('RSI', 0)),
-                    "macd": float(last_row.get('MACD', 0)),
-                    "macd_signal": float(last_row.get('MACD_signal', 0)),
-                    "bb_upper": float(last_row.get('BB_Upper', 0)),
-                    "bb_lower": float(last_row.get('BB_Lower', 0)),
-                    "sma_20": float(last_row.get('SMA_20', 0)),
-                    "sma_50": float(last_row.get('SMA_50', 0)),
-                    "volume": float(last_row.get('Volume', 0)),
-                    "close": float(last_row.get('Close', 0))
-                }
-                redis_publisher.publish("indicators-update", indicators)
-                redis_publisher.log("success", "✅ Indicators calculated and updated")
-
             # --- GAP CHECK LOGIC ---
             if self.in_position:
                 if self.execution.current_stop_order:
                     logger.info("✅ Stop Loss already active. Skipping restore.")
                     redis_publisher.log("success", "✅ Stop Loss already active. Skipping restore.")
                     return
-                
-                last_sl_price = self.load_overnight_state()
-                
-                if last_sl_price:
-                    logger.info(f"🔍 Gap Check: SL saved yesterday = {last_sl_price}")
-                    
-                    # Get current price. 
-                    # Option A: Last close (if pre-market) or Today's open if data is live
-                    # For safety, ask for instant live price
-                    tickers = self.connector.ib.reqTickers(self.connector.contract)
-                    if tickers:
-                        current_price = tickers[0].marketPrice() # Current price (Last/Mark)
-                        # If marketPrice is not available (e.g. delayed data), use last close from df
-                        if pd.isna(current_price) or current_price == 0:
-                             current_price = df.iloc[-1]['Close']
-                    else:
-                        current_price = df.iloc[-1]['Close']
-
-                    logger.info(f"Estimated Open Price: {current_price}")
-
-                    # CONDITION: If current price is LOWER than old stop loss
-                    if current_price < last_sl_price:
-                        logger.warning(f"🚨 GAP DOWN DETECTED! Open ({current_price}) < Old SL ({last_sl_price})")
-                        redis_publisher.log("error", f"🚨 GAP DOWN: {current_price} < {last_sl_price}. Immediate close!")
-                        
-                        # Close position immediately (Market Order)
-                        self.execution.close_all_positions() 
-                        self.in_position = False
-                        self.clear_overnight_state()
-                        return # Exit, trade finished
-                    
-                    else:
-                        logger.info("✅ Price above old SL. Position remains open.")
-                        redis_publisher.log("success", "✅ No critical Gap. Position maintained.")
-                        
-                        success = self.execution.place_stop_loss(last_sl_price)
-                        if success:
-                            redis_publisher.log("success", f"✅ Overnight SL restored at {last_sl_price}")
-                        else:
-                            redis_publisher.send_error("Failed to restore Overnight SL")
                 else:
-                    logger.warning("⚠️ No saved SL found inside routine. Using ATR.")
-                    redis_publisher.log("warning", "⚠️ No saved SL found inside routine. Using ATR.")
-                    emerg_price = self.execution._calculate_emergency_stop(df)
-                    if emerg_price:
-                        self.execution.place_stop_loss(emerg_price)
-            
+                    logger.error("Open position found but no Stop Loss active. Skipping restore.")
+                    redis_publisher.send_error("Open position found but no Stop Loss active. Skipping restore.")
+                    return
+            else:
+                logger.info("✅ No open positions. Skipping restore.")
+                redis_publisher.log("success", "✅ No open positions. Skipping restore.")
+                return
         except Exception as e:
             logger.error(f"Error in pre-market routine: {e}")
             redis_publisher.send_error(f"Pre-market routine error: {str(e)}")
-    
-    def get_open_positions(self):
-        """
-        Retrieve all open positions
-        """
-        try:
-            # Method 1: Current positions
-            positions = self.connector.ib.positions()
-            
-            logger.info(f"Found {len(positions)} open positions")
-            redis_publisher.log("info", f"📈 Found {len(positions)} open positions")
-
-            if len(positions) > 0:
-                self.in_position = True
-
-                # Send position details to dashboard
-                for pos in positions:
-                    if pos.contract.symbol == config.SYMBOL:
-                        pos_info = {
-                            "symbol": pos.contract.symbol,
-                            "shares": pos.position,
-                            "avg_cost": pos.avgCost
-                        }
-                        redis_publisher.publish("position-info", pos_info)
-            
-        except Exception as e:
-            logger.error(f"Error retrieving positions: {e}")
-            redis_publisher.send_error(f"Position retrieval error: {str(e)}")
-    
-    def end_of_day_routine(self):
-        """
-        End of day routine.
-        At 16:00: Cancel SL, keep position, save SL level.
-        """
-        logger.info("=" * 50)
-        logger.info("END OF DAY ROUTINE - OVERNIGHT PREPARATION")
-        logger.info("=" * 50)
-        
-        redis_publisher.log("info", "🔔 Start end of day routine (Overnight Mode)")
-        
-        try:
-            # Update position info
-            self.get_open_positions()
-
-            if self.in_position:
-                logger.info("Open position detected. Searching for active Stop Loss...")
-                redis_publisher.log("info", "Open position detected. Searching for active Stop Loss...")
-                
-                # 1. Find active Stop Loss order on IB
-                # Note: ib.openOrders() returns all open orders
-                open_trades = self.connector.ib.openTrades()
-                stop_order = None
-                
-                for trade in open_trades:
-                    # Search for STP (Stop) or TRAIL (Trailing Stop) orders
-                    if trade.order.orderType in ['STP', 'TRAIL', 'STP LMT']:
-                        stop_order = trade.order
-                        break
-                
-                if stop_order:
-                    # 2. Get stop price (auxPrice)
-                    # For Trailing sometimes need to calculate, but auxPrice is base trigger for STP
-                    current_sl_price = stop_order.auxPrice
-                    
-                    if current_sl_price and current_sl_price > 0:
-                        logger.info(f"Found active Stop Loss at: {current_sl_price}")
-                        redis_publisher.log("info", f"Found active Stop Loss at: {current_sl_price}")
-                        
-                        # 3. Save state to file
-                        self.save_overnight_state(current_sl_price)
-                        
-                        # 4. Cancel Stop Loss order on IB
-                        self.connector.ib.cancelOrder(stop_order)
-                        self.execution.current_stop_order = None
-                        self.execution.stop_price = None
-                        logger.info("❌ Stop Loss order cancelled for the night.")
-                        redis_publisher.log("warning", f"🌙 SL cancelled at {current_sl_price} (Overnight Save)")
-                    else:
-                        logger.warning("Stop order found but invalid price.")
-                else:
-                    logger.info("No Stop Loss order found to cancel.")
-                    redis_publisher.log("info", "No Stop Loss order found to cancel.")
-            else:
-                logger.info("No open position. No action needed.")
-                redis_publisher.log("info", "No open position. No action needed.")
-                self.clear_overnight_state()
-
-            redis_publisher.publish("market-event", {"type": "market-close", "time": datetime.now().isoformat()})
-            
-        except Exception as e:
-            redis_publisher.send_error(f"EOD routine error: {str(e)}")
-            logger.error(f"Error in EOD routine: {e}")
     
     def on_new_candle(self):
         """
@@ -351,83 +223,25 @@ class TradingBot:
             
             # 2. Calculate indicators (incremental)
             df = self.indicator_calculator.calculate_incremental(df)
-
-            # Send latest values to dashboard
-            if not df.empty:
-                last_row = df.iloc[-1]
-
-                candle_data = {
-                    "time": current_time.isoformat(),
-                    "open": float(last_row.get('Open', 0)),
-                    "high": float(last_row.get('High', 0)),
-                    "low": float(last_row.get('Low', 0)),
-                    "close": float(last_row.get('Close', 0)),
-                    "volume": float(last_row.get('Volume', 0)),
-                    "rsi": float(last_row.get('RSI', 0)),
-                    "macd": float(last_row.get('MACD', 0)),
-                    "macd_signal": float(last_row.get('MACD_signal', 0))
-                }
-                redis_publisher.publish("candle-update", candle_data)
             
             # 3. Check signals (commented in your original code)
             if not self.in_position:
                 signal = self.execution.check_entry_signals(df)
                 if signal:
-                    redis_publisher.send_trade_signal("BUY", {
-                        "reason": "Entry signal detected",
-                        "indicators": candle_data
-                    })
                     self.in_position = True
             else:
                 if self.execution.check_exit_signals(df):
-                    redis_publisher.send_trade_signal("SELL", {
-                        "reason": "Exit signal detected",
-                        "indicators": candle_data
-                    })
                     logger.info("Trade closed because conditions no longer met")
                     self.in_position = False
-            
-                self.execution.update_trailing_stop(df)
-            
-            # 4. Update system status
-            self.send_system_status()
+                else:
+                    self.execution.update_trailing_stop(df)
+
+            self.connector._send_account_info()
             
         except Exception as e:
             logger.error(f"Error in on_new_candle: {e}")
             redis_publisher.send_error(f"Candle processing error: {str(e)}")
     
-    def save_overnight_state(self, stop_loss_price):
-        """Save stop loss to file for next morning."""
-        state = {
-            "date": datetime.now().strftime("%Y-%m-%d"),
-            "last_stop_loss": float(stop_loss_price),
-            "symbol": config.SYMBOL
-        }
-        with open("bot_state.json", "w") as f:
-            json.dump(state, f)
-        logger.info(f"💾 Overnight state saved: SL at {stop_loss_price}")
-
-    def load_overnight_state(self):
-        """Load saved stop loss."""
-        if not os.path.exists("bot_state.json"):
-            return None
-        
-        try:
-            with open("bot_state.json", "r") as f:
-                state = json.load(f)
-            
-            # Check data is recent (yesterday or today)
-            # Here we simplify returning only the value
-            return state.get("last_stop_loss")
-        except Exception as e:
-            logger.error(f"Error loading state: {e}")
-            return None
-        
-    def clear_overnight_state(self):
-        """Delete state file."""
-        if os.path.exists("bot_state.json"):
-            os.remove("bot_state.json")
-
     async def run(self):
         """Main async loop."""
         logger.info("Trading Bot started")
@@ -458,7 +272,7 @@ class TradingBot:
 
                     # B) EOD Routine (16:00)
                     elif now.hour == 16 and now.minute == 0:
-                        self.end_of_day_routine()
+                        redis_publisher.log("info", "🌙 EOD bot is sleeping")
                         await asyncio.sleep(2)
 
                     # C) 5 Minute Candles (9:35 -> 15:55, every 5 min)
@@ -507,7 +321,6 @@ class TradingBot:
             if self.execution and self.execution.has_position():
                 logger.warning("Closing open positions...")
                 redis_publisher.log("warning", "Closing positions before shutdown")
-                # self.execution.close_all_positions()
             
             # Disconnect from IB
             if self.connector:

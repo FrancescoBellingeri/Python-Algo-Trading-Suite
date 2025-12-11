@@ -14,17 +14,17 @@ all_data = []
 # Use 2018-11-16 as start date
 # end_date = datetime(2011, 8, 29, 0, 0, 0)
 end_date = datetime.now()
-for i in range(1, 35):
+for i in range(1, 45):
     endDateTime = end_date.strftime('%Y%m%d %H:%M:%S')
 
     # Request historical daily data
     bars = ib.reqHistoricalData(
         contract,
         endDateTime=endDateTime,              # until now  20151231 23:59:59
-        durationStr='6 M',           # last 12 months (you can use '5 Y', '6 M', etc.)
+        durationStr='4 M',           # last 12 months (you can use '5 Y', '6 M', etc.)
         barSizeSetting='5 mins',      # daily timeframe
         whatToShow='TRADES',         # trade prices
-        useRTH=True,                 # only regular trading hours
+        useRTH=False,                 # only regular trading hours
         formatDate=1
     )
 
@@ -47,6 +47,6 @@ if all_data:
     # combined = combined.sort_values('date').reset_index(drop=True)
     # final_df = combined
     
-final_df.to_csv('data/qqq_IB_5min.csv', index=False)
+final_df.to_csv('data/qqq_rth.csv', index=False)
 
 ib.disconnect()

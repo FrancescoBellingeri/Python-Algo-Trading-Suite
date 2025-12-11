@@ -4,7 +4,7 @@ import numpy as np
 import datetime
 
 # Load the dataset
-df = pd.read_csv('data/qqq_IB_5min.csv')
+df = pd.read_csv('data/qqq_rth.csv')
 df['date'] = pd.to_datetime(df['date'], utc=True).dt.tz_convert('America/New_York')
 
 # Step 2: Calculate DAILY RETURNS (for volatility)
@@ -24,4 +24,4 @@ df.dropna(inplace=True)
 print(df.tail())
 
 # Save
-df.to_csv('data/qqq_5min.csv', index=False)
+df.to_csv('data/qqq_5min_rth.csv', index=False)

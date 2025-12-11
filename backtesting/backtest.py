@@ -1,6 +1,7 @@
 import pandas as pd
 import pandas_ta as ta
 import numpy as np
+from datetime import time
 
 def ibkr_commission(shares):
     total_fees = shares * 0.005
@@ -39,6 +40,9 @@ def run_backtest(df, investment, risk_per_trade_pct, atr_multiplier, max_risk_do
     dollar_risk = 0
     entry_idx = 0
     fees = 0
+
+    market_open = time(9, 30)
+    market_close = time(16, 00)
 
     for i in range(1, len(df)):
         
@@ -86,38 +90,40 @@ def run_backtest(df, investment, risk_per_trade_pct, atr_multiplier, max_risk_do
             trailing_stop_price = max(trailing_stop_price, potential_stop)
         # --- ENTRY LOGIC ---
         if not in_position:
-            if df['WILLR_10'].iloc[i] < -80 and df['close'].iloc[i] > df['SMA_200'].iloc[i]:
-                entry_date = df['date'].iloc[i]
+            current_time = df['date'].iloc[i].time()
+            if market_open <= current_time <= market_close:
 
-                entry_price = df['open'].iloc[i+1]
-                
-                atr_value = df['ATR_14'].iloc[i]
-                if atr_value <= 0: 
-                    continue # Avoid division by zero if ATR is zero
-                
-                # --- POSITION SIZING BASED ON ATR AND RISK ---
-                risk_per_share = atr_value * atr_multiplier
-                # Set initial stop loss
-                trailing_stop_price = round(entry_price - risk_per_share, 2)
+                if df['WILLR_10'].iloc[i] < -80 and df['close'].iloc[i] > df['SMA_200'].iloc[i]:
+                    entry_date = df['date'].iloc[i]
 
-                no_of_shares, dollar_risk = calculate_position_size(
-                    entry_price=entry_price,
-                    stop_loss=trailing_stop_price,
-                    account_size=equity,
-                    risk_per_trade_pct=risk_per_trade_pct,
-                    max_risk_dollars=max_risk_dollars,
-                    leverage=4
-                )
+                    entry_price = df['open'].iloc[i+1]
+                    
+                    atr_value = df['ATR_14'].iloc[i]
+                    if atr_value <= 0: 
+                        continue # Avoid division by zero if ATR is zero
+                    
+                    # --- POSITION SIZING BASED ON ATR AND RISK ---
+                    risk_per_share = atr_value * atr_multiplier
+                    # Set initial stop loss
+                    trailing_stop_price = round(entry_price - risk_per_share, 2)
 
-                if no_of_shares > 0:
-                    in_position = True
-                    fees = ibkr_commission(no_of_shares) * 2
-                    entry_idx = i + 1
-                
-                # Execute trade
-                equity -= (no_of_shares * entry_price) 
-                
+                    no_of_shares, dollar_risk = calculate_position_size(
+                        entry_price=entry_price,
+                        stop_loss=trailing_stop_price,
+                        account_size=equity,
+                        risk_per_trade_pct=risk_per_trade_pct,
+                        max_risk_dollars=max_risk_dollars,
+                        leverage=4
+                    )
 
+                    if no_of_shares > 0:
+                        in_position = True
+                        fees = ibkr_commission(no_of_shares) * 2
+                        entry_idx = i + 1
+                    
+                    # Execute trade
+                    equity -= (no_of_shares * entry_price) 
+                
     # Close position if still open at the end
     if in_position:
         equity += (no_of_shares * df['close'].iloc[i])
@@ -130,8 +136,9 @@ def run_backtest(df, investment, risk_per_trade_pct, atr_multiplier, max_risk_do
    
 STARTING_CAPITAL = 10000
 
-df = pd.read_csv('data/QQQ_5min.csv')
+df = pd.read_csv('data/qqq_5min_rth.csv')
 df['date'] = pd.to_datetime(df['date'], utc=True).dt.tz_convert('America/New_York')
+# df = df[df['date'].dt.year >= 2025].reset_index(drop=True)
 
 # Execute backtest
 trades_df = run_backtest(df, STARTING_CAPITAL, risk_per_trade_pct=0.02, atr_multiplier=10, max_risk_dollars=30000)

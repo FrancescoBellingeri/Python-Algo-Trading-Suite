@@ -244,47 +244,14 @@ class IBDashboardHandler:
     def handle_dashboard_command(self, command: Dict[str, Any]):
         """Handles commands received from dashboard"""
         cmd_type = command.get("type")
-        payload = command.get("payload", {})
         
         logger.info(f"Processing dashboard command: {cmd_type}")
         
-        if cmd_type == "close_all_positions":
-            self._close_all_positions()
-        elif cmd_type == "cancel_all_orders":
-            self._cancel_all_orders()
-        elif cmd_type == "get_status":
+        if cmd_type == "get_status":
             self._send_status_update()
-        elif cmd_type == "set_risk_limit":
-            self._update_risk_limit(payload)
         else:
             logger.warning(f"Unknown command: {cmd_type}")
-    
-    def _close_all_positions(self):
-        """Closes all open positions"""
-        positions = self.ib.positions()
-        for pos in positions:
-            if pos.position != 0:
-                order = Order()
-                order.action = 'SELL' if pos.position > 0 else 'BUY'
-                order.totalQuantity = abs(pos.position)
-                order.orderType = 'MKT'
-                
-                trade = self.ib.placeOrder(pos.contract, order)
-                self.publisher.log("warning", f"Closing position: {pos.contract.symbol} {pos.position} shares")
-    
-    def _cancel_all_orders(self):
-        """Cancels all open orders"""
-        self.ib.reqGlobalCancel()
-        self.publisher.log("warning", "All open orders cancelled by dashboard command")
     
     def _send_status_update(self):
         """Sends full status update"""
         self._send_initial_state()
-    
-    def _update_risk_limit(self, payload: Dict[str, Any]):
-        """Updates risk limits"""
-        # Implement logic to update risk limits
-        new_limit = payload.get("max_risk")
-        if new_limit:
-            config.MAX_RISK_PER_TRADE = new_limit
-            self.publisher.log("info", f"Risk limit updated to {new_limit}")

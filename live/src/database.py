@@ -1,5 +1,6 @@
 import pandas as pd
-from sqlalchemy import create_engine, Column, String, Float, DateTime, Integer
+from datetime import datetime
+from sqlalchemy import create_engine, Column, String, Float, Integer
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy.dialects.postgresql import TIMESTAMP
 from config import DATABASE_URL
@@ -37,15 +38,15 @@ class Trade(Base):
     __tablename__ = 'trades'
     
     id = Column(Integer, primary_key=True, autoincrement=True)
-    symbol = Column(String(10), nullable=False)
-    entry_price = Column(Float, nullable=False)
-    exit_price = Column(Float, nullable=False)
-    quantity = Column(Integer, nullable=False)
-    entry_time = Column(TIMESTAMP(timezone=True), nullable=False)
-    exit_time = Column(TIMESTAMP(timezone=True), nullable=False)
-    pnl_dollar = Column(Float, nullable=False)
-    pnl_percent = Column(Float, nullable=False)
-    exit_reason = Column(String(20), nullable=False)  # "TRAILING_STOP" or "SMA_CROSS"
+    symbol = Column(String(10), nullable=True)
+    entry_price = Column(Float, nullable=True)
+    exit_price = Column(Float, nullable=True)
+    quantity = Column(Integer, nullable=True)
+    entry_time = Column(TIMESTAMP(timezone=True), nullable=True)
+    exit_time = Column(TIMESTAMP(timezone=True), nullable=True)
+    pnl_dollar = Column(Float, nullable=True)
+    pnl_percent = Column(Float, nullable=True)
+    exit_reason = Column(String(20), nullable=True)  # "TRAILING_STOP" or "SMA_CROSS"
 
 class DatabaseHandler:
     def __init__(self):
@@ -160,6 +161,11 @@ class DatabaseHandler:
         """
         session = self.Session()
         try:
+            if not entry_time:
+                entry_time = datetime.now()
+            if not exit_time:
+                exit_time = datetime.now()
+            
             # Ensure timestamps are timezone-aware (UTC)
             if hasattr(entry_time, 'tzinfo') and entry_time.tzinfo is None:
                 entry_time = pd.Timestamp(entry_time, tz='UTC')

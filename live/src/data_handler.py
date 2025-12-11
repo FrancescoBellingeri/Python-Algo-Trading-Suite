@@ -42,11 +42,11 @@ class DataHandler:
         
     def download_historical_data(self):
         """
-        Downloads last 1000 minutes to calculate all indicators.
+        Downloads last 5 Days of historical data to calculate all indicators.
         """
         try:            
-            logger.info(f"Downloading 1000 minutes of historical data for {self.symbol}...")
-            redis_publisher.log("success", f"Downloading 1000 minutes of historical data for {self.symbol}...")
+            logger.info(f"Downloading 5 Days of historical data for {self.symbol}...")
+            redis_publisher.log("success", f"Downloading 5 Days of historical data for {self.symbol}...")
 
             bars = self.ib.reqHistoricalData(
                 self.contract,
@@ -72,19 +72,7 @@ class DataHandler:
                 if success:
                     logger.info(f"✅ Downloaded and saved {len(df)} candles to Database.")
                     redis_publisher.log("success", f"✅ Downloaded and saved {len(df)} candles to Database.")
-
-                # Send download statistics
-                redis_publisher.publish("data-download", {
-                    "status": "completed",
-                    "symbol": self.symbol,
-                    "candles_count": len(df),
-                    "start_date": str(df['date'].min()),
-                    "end_date": str(df['date'].max()),
-                    "saved_to_db": success
-                })
-
-                logger.info(f"Downloaded and saved {len(df)} candles. From {df['date'].min()} to {df['date'].max()}")
-                redis_publisher.log("success", f"Downloaded and saved {len(df)} candles. From {df['date'].min()} to {df['date'].max()}")
+                    
                 return df
             
             logger.info(f"No data downloaded")

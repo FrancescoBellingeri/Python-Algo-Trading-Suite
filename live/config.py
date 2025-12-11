@@ -52,6 +52,7 @@ CURRENCY = 'USD'
 
 # Risk Management
 MAX_RISK_PER_TRADE = 0.02 # 2%
+ATR_MULTIPLIER = 10
 
 # === TIMING ===
 MARKET_OPEN_TIME = "09:30"

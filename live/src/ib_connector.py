@@ -18,12 +18,6 @@ class IBConnector:
         try:
             # Send connection attempt message
             redis_publisher.log("info", f"📡 Connection attempt to IB {IB_HOST}:{IB_PORT}...")
-            redis_publisher.publish("connection-status", {
-                "status": "connecting",
-                "host": IB_HOST,
-                "port": IB_PORT,
-                "client_id": IB_CLIENT_ID
-            })
             
             await self.ib.connectAsync(
                 host=IB_HOST,
@@ -42,14 +36,6 @@ class IBConnector:
             
             # Send connection confirmation to dashboard
             redis_publisher.log("success", f"✅ Connected to Interactive Brokers")
-            redis_publisher.publish("connection-status", {
-                "status": "connected",
-                "host": IB_HOST,
-                "port": IB_PORT,
-                "client_id": IB_CLIENT_ID,
-                "connected_at": self.connection_time.isoformat(),
-                "is_paper": IB_PORT == 7497  # 7497 = paper trading
-            })
             
             # Send account info
             self._send_account_info()
@@ -68,13 +54,6 @@ class IBConnector:
             # Send error to dashboard
             redis_publisher.send_error(f"IB connection failed: {str(e)}", error_code=500)
             redis_publisher.log("error", f"❌ IB connection error: {str(e)}")
-            redis_publisher.publish("connection-status", {
-                "status": "error",
-                "error": str(e),
-                "reconnect_attempts": self.reconnect_attempts,
-                "host": IB_HOST,
-                "port": IB_PORT
-            })
             
             return False
     
@@ -84,10 +63,6 @@ class IBConnector:
             try:
                 # Send disconnection notification
                 redis_publisher.log("warning", "🔌 Disconnecting from IB...")
-                redis_publisher.publish("connection-status", {
-                    "status": "disconnecting",
-                    "reason": "manual_disconnect"
-                })
                 
                 self.ib.disconnect()
                 self.connected = False
@@ -97,10 +72,6 @@ class IBConnector:
                 
                 # Disconnection confirmation
                 redis_publisher.log("info", "📴 Disconnected from Interactive Brokers")
-                redis_publisher.publish("connection-status", {
-                    "status": "disconnected",
-                    "timestamp": datetime.now().isoformat()
-                })
                 
             except Exception as e:
                 logger.error(f"Error during disconnection: {e}")
@@ -118,19 +89,9 @@ class IBConnector:
                 # Connection lost unexpectedly
                 redis_publisher.log("error", "⚠️ IB connection lost!")
                 redis_publisher.send_error("IB connection lost unexpectedly")
-                redis_publisher.publish("connection-status", {
-                    "status": "disconnected",
-                    "reason": "connection_lost",
-                    "timestamp": datetime.now().isoformat()
-                })
             else:
                 # Reconnected
                 redis_publisher.log("success", "✅ Reconnected to IB")
-                redis_publisher.publish("connection-status", {
-                    "status": "connected",
-                    "reason": "reconnected",
-                    "timestamp": datetime.now().isoformat()
-                })
         
         return is_connected
     
@@ -139,7 +100,6 @@ class IBConnector:
         try:
             # Get account info
             account_values = self.ib.accountValues()
-            account_summary = self.ib.accountSummary()
             
             if account_values:
                 # Create dictionary with account values
@@ -154,16 +114,8 @@ class IBConnector:
                 net_liq = account_dict.get('NetLiquidation', 'N/A')
                 buying_power = account_dict.get('BuyingPower', 'N/A')
                 redis_publisher.log("info", f"💰 Account - Net Liq: ${net_liq}, Buying Power: ${buying_power}")
-            
-            # Info account summary
-            if account_summary:
-                account_id = account_summary[0].account if account_summary else 'Unknown'
-                redis_publisher.publish("account-info", {
-                    "account_id": account_id,
-                    "is_paper": IB_PORT == 7497,
-                    "timestamp": datetime.now().isoformat()
-                })
-                
+            else:
+                redis_publisher.log("warning", "⚠️ Unable to retrieve account info")
         except Exception as e:
             logger.error(f"Error retrieving account info: {e}")
             redis_publisher.log("warning", "⚠️ Unable to retrieve account info")
@@ -183,11 +135,6 @@ class IBConnector:
             def on_disconnected():
                 self.connected = False
                 redis_publisher.log("error", "❌ IB Disconnected unexpectedly")
-                redis_publisher.publish("connection-status", {
-                    "status": "disconnected",
-                    "reason": "unexpected_disconnect",
-                    "timestamp": datetime.now().isoformat()
-                })
             
             # Register handlers
             self.ib.errorEvent += on_error

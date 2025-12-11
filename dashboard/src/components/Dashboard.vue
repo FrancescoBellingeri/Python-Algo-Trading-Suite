@@ -99,9 +99,9 @@
                 <!-- Distance bar could go here -->
               </div>
 
-              <!-- EMA Monitor -->
+              <!-- SMA Monitor -->
               <div class="bg-[#0A0E1A]/50 p-3 rounded border border-gray-700">
-                <p class="text-xs text-gray-500 mb-1">EMA Value</p>
+                <p class="text-xs text-gray-500 mb-1">SMA Value</p>
                 <p class="text-xl font-mono text-purple-400">${{ activePosition.current_sma_value?.toFixed(2) || '---'
                   }}</p>
               </div>
