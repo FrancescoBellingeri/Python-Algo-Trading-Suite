@@ -79,21 +79,13 @@ class IBConnector:
     
     def is_connected(self):
         """Checks if connected and sends update."""
-        is_connected = self.ib.isConnected()
-        
-        # If state changed, notify
-        if is_connected != self.connected:
-            self.connected = is_connected
-            
-            if not is_connected:
-                # Connection lost unexpectedly
-                redis_publisher.log("error", "⚠️ IB connection lost!")
-                redis_publisher.send_error("IB connection lost unexpectedly")
-            else:
-                # Reconnected
-                redis_publisher.log("success", "✅ Reconnected to IB")
-        
-        return is_connected
+        if not self.ib.client or not self.ib.isConnected():
+            self.connected = False
+            redis_publisher.send_error("IB connection lost unexpectedly")
+            return False
+    
+        redis_publisher.log("success", "✅ Reconnected to IB")
+        return True
     
     def _send_account_info(self):
         """Sends account information to dashboard."""

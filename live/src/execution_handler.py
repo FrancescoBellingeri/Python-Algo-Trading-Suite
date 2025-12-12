@@ -41,7 +41,7 @@ class ExecutionHandler:
         logger.info(f"ExecutionHandler initialized - Capital: ${capital:,.0f}")
         redis_publisher.log("info", f"💰 ExecutionHandler initialized - Capital: ${capital:,.0f}")
     
-    def calculate_position_size(self, entry_price, stop_loss, account_size, risk_per_trade_pct, leverage=4):
+    def calculate_position_size(self, entry_price, stop_loss, account_size, risk_per_trade_pct, leverage=1.95):
         """
         Calculates the number of contracts (or shares) to buy considering:
         - risk per trade in percentage,
@@ -95,7 +95,7 @@ class ExecutionHandler:
                     stop_loss=trailing_stop_price,
                     account_size=self.capital,
                     risk_per_trade_pct=self.base_risk,
-                    leverage=4
+                    leverage=1.95
                 )
         
             if shares <= 0:

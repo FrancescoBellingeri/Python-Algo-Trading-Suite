@@ -259,6 +259,18 @@ class TradingBot:
 
         while self.is_running:
             try:
+                if not self.connector.is_connected():
+                    logger.warning("IB connection lost - waiting for reconnection...")
+                    redis_publisher.log("warning", "IB connection lost - waiting for reconnection...")
+                    await asyncio.sleep(5)
+                    
+                    try:
+                        await self.connector.connect()
+                    except Exception as e:
+                        logger.error(f"Reconnect failed: {e}")
+                        redis_publisher.send_error(f"Reconnect failed: {e}")
+                        continue
+                
                 # 1. Get current NY time
                 now = datetime.now(ny_tz)
                 
