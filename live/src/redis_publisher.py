@@ -238,33 +238,33 @@ class RedisPublisher:
         thread = threading.Thread(target=listen_for_commands, daemon=True, name="Redis-Command-Listener")
         thread.start()
     
-        def _handle_default_command(self, command: Dict[str, Any]):
-            """Handles default commands when there is no custom callback"""
-            cmd_type = command.get("type")
+    def _handle_default_command(self, command: Dict[str, Any]):
+        """Handles default commands when there is no custom callback"""
+        cmd_type = command.get("type")
+        
+        if cmd_type == "stop":
+            logger.warning("Received STOP command from dashboard")
+            self.log("warning", "Bot stopped by dashboard command")
+            # Here you could implement logic to stop the bot
             
-            if cmd_type == "stop":
-                logger.warning("Received STOP command from dashboard")
-                self.log("warning", "Bot stopped by dashboard command")
-                # Here you could implement logic to stop the bot
-                
-            elif cmd_type == "pause":
-                logger.info("Received PAUSE command from dashboard")
-                self.log("info", "Bot paused by dashboard command")
-                
-            elif cmd_type == "resume":
-                logger.info("Received RESUME command from dashboard")
-                self.log("info", "Bot resumed by dashboard command")
-                
-            elif cmd_type == "close_positions":
-                logger.warning("Received CLOSE_POSITIONS command from dashboard")
-                self.log("warning", "Closing all positions by dashboard command")
-                
-            elif cmd_type == "status":
-                logger.info("Status request from dashboard")
-                # Send status update
-                
-            else:
-                logger.warning(f"Unknown command type: {cmd_type}")
+        elif cmd_type == "pause":
+            logger.info("Received PAUSE command from dashboard")
+            self.log("info", "Bot paused by dashboard command")
+            
+        elif cmd_type == "resume":
+            logger.info("Received RESUME command from dashboard")
+            self.log("info", "Bot resumed by dashboard command")
+            
+        elif cmd_type == "close_positions":
+            logger.warning("Received CLOSE_POSITIONS command from dashboard")
+            self.log("warning", "Closing all positions by dashboard command")
+            
+        elif cmd_type == "status":
+            logger.info("Status request from dashboard")
+            # Send status update
+            
+        else:
+            logger.warning(f"Unknown command type: {cmd_type}")
     
     def set_command_callback(self, callback):
         """Sets callback to handle received commands"""

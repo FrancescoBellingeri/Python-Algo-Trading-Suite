@@ -136,7 +136,7 @@ def run_backtest(df, investment, risk_per_trade_pct, atr_multiplier, max_risk_do
    
 STARTING_CAPITAL = 10000
 
-df = pd.read_csv('data/qqq_5min_rth.csv')
+df = pd.read_csv('data/qqq_5min.csv')
 df['date'] = pd.to_datetime(df['date'], utc=True).dt.tz_convert('America/New_York')
 # df = df[df['date'].dt.year >= 2025].reset_index(drop=True)
 

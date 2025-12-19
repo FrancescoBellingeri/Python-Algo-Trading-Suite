@@ -3,6 +3,7 @@ from src.logger import logger
 from src.redis_publisher import redis_publisher
 from config import IB_HOST, IB_PORT, IB_CLIENT_ID
 from datetime import datetime
+import time
 
 class IBConnector:
     """Handles connection to Interactive Brokers."""
@@ -22,7 +23,7 @@ class IBConnector:
             await self.ib.connectAsync(
                 host=IB_HOST,
                 port=IB_PORT,
-                clientId=IB_CLIENT_ID,
+                clientId=int(time.time()) % 10000,
                 timeout=15
             )
             
@@ -83,8 +84,6 @@ class IBConnector:
             self.connected = False
             redis_publisher.send_error("IB connection lost unexpectedly")
             return False
-    
-        redis_publisher.log("success", "✅ Reconnected to IB")
         return True
     
     def _send_account_info(self):

@@ -14,7 +14,8 @@ services:
       # Impostazioni Critiche per l'automazione
       TWS_SETTINGS_PATH: /home/ibgateway/Jts
       TWOFA_TIMEOUT_ACTION: restart # Se fallisce 2FA, riprova
-      AUTO_RESTART_TIME: "10:00 AM" # Riavvia tutto alle 4 di notte (prima del pre-market)
+      TZ: America/New_York
+      AUTO_RESTART_TIME: "01:00 AM" # Riavvia tutto alle 1 di notte (prima del pre-market)
       ALLOW_BLIND_TRADING: "yes" # Fondamentale per non bloccare gli ordini
       READ_ONLY_API: "no" # Permette di inviare ordini
 

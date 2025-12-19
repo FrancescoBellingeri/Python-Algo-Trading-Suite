@@ -80,7 +80,9 @@ export function useWebSocket(url = DEFAULT_WS_URL) {
       case "initial-state":
         // Ripristina tutto lo stato
         if (payload.account) accountInfo.value = payload.account;
-        if (payload.active_position) activePosition.value = payload.active_position;
+        if (payload.active_position) {
+          activePosition.value = Array.isArray(payload.active_position) ? (payload.active_position.length > 0 ? payload.active_position[0] : null) : payload.active_position;
+        }
         if (payload.latest_price) latestPrice.value = payload.latest_price;
         if (payload.logs) logs.value = payload.logs;
         break;

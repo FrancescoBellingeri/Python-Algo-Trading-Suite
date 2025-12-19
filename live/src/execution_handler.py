@@ -36,12 +36,36 @@ class ExecutionHandler:
         self.broadcast_position_update()
 
         self.atr_multiplier = ATR_MULTIPLIER
+        self.last_available_funds = 0.0
         
         # Send initial info to dashboard
         logger.info(f"ExecutionHandler initialized - Capital: ${capital:,.0f}")
         redis_publisher.log("info", f"💰 ExecutionHandler initialized - Capital: ${capital:,.0f}")
+
+    def get_available_margin(self):
+        """
+        Recupera i fondi disponibili effettivi (AvailableFunds) dall'account.
+        Questo valore indica quanto margine libero hai per aprire nuove posizioni.
+        """
+        try:
+            # Richiede un aggiornamento rapido del sommario account
+            tags = 'AvailableFunds,NetLiquidation'
+            summary = self.ib.accountSummary(group='All', tags=tags)
+            
+            avail_funds = 0.0
+            for item in summary:
+                if item.tag == 'AvailableFunds' and item.currency == 'EUR': # O 'USD' in base al tuo conto base
+                    avail_funds = float(item.value)
+                    self.last_available_funds = avail_funds
+                if item.tag == 'NetLiquidation' and item.currency == 'EUR':
+                    self.capital = float(item.value)
+            
+            return avail_funds
+        except Exception as e:
+            logger.error(f"Error fetching account margin: {e}")
+            return self.last_available_funds
     
-    def calculate_position_size(self, entry_price, stop_loss, account_size, risk_per_trade_pct, leverage=1.95):
+    def calculate_position_size(self, entry_price, stop_loss, leverage=1.95):
         """
         Calculates the number of contracts (or shares) to buy considering:
         - risk per trade in percentage,
@@ -49,17 +73,28 @@ class ExecutionHandler:
         - maximum absolute loss allowed in dollars.
         """
 
+        # 1. Fetch available margin
+        available_funds = self.get_available_margin()
+        
+        if available_funds <= 0:
+            logger.error(f"Available Funds too low: {available_funds}")
+            redis_publisher.send_error(f"Available Funds too low: {available_funds}")
+            return 0
+
+        max_trade_value_margin = available_funds * 0.70
+        max_shares_margin = int(max_trade_value_margin / entry_price)
+
         # Risk per contract
         R = abs(entry_price - stop_loss)
         if R == 0 or R < 0.01:  # minimal symbolic risk to avoid division by zero
             return 0
 
-        risk_dollars = account_size * risk_per_trade_pct
+        risk_dollars = self.capital * self.base_risk
         risk_based_size = risk_dollars / R
-        leverage_based_size = (account_size * leverage) / entry_price
-        position_size = int(min(risk_based_size, leverage_based_size))
+        
+        final_size = min(risk_based_size, max_shares_margin)
 
-        return position_size
+        return final_size
     
     def check_entry_signals(self, df):
         """
@@ -93,8 +128,6 @@ class ExecutionHandler:
             shares = self.calculate_position_size(
                     entry_price=entry_price,
                     stop_loss=trailing_stop_price,
-                    account_size=self.capital,
-                    risk_per_trade_pct=self.base_risk,
                     leverage=1.95
                 )
         
@@ -129,10 +162,15 @@ class ExecutionHandler:
 
         return False
     
-    def open_long_position(self, shares, stop_price):
+    def open_long_position(self, shares, stop_price, attempt=1):
         """
         Opens a long position using a BRACKET ORDER (Parent + Child).
         """
+        if attempt > 3:
+            logger.error("❌ Max retries reached. Order aborted.")
+            redis_publisher.send_error("Max retries reached. Order aborted.")
+            return False
+
         try:
             logger.info(f"📈 Sending Bracket Order: Buy {shares} @ MKT, Stop @ {stop_price}")
             redis_publisher.log("info", f"📈 Sending order: BUY {shares} shares @ MARKET, Stop Loss @ ${stop_price:.2f}")
@@ -158,28 +196,46 @@ class ExecutionHandler:
             # 5. Wait for parent FILL confirmation
             self.ib.sleep(1)
             
-            if parent_trade.orderStatus.status == 'Filled':
-                fill_price = parent_trade.orderStatus.avgFillPrice
-                self.entry_price = fill_price
+            status = parent_trade.orderStatus.status
+            
+            if status in ['Filled', 'PreSubmitted', 'Submitted']:
+                # Successo!
+                if status == 'Filled':
+                    fill_price = parent_trade.orderStatus.avgFillPrice
+                    self.entry_price = fill_price
+                else:
+                    self.entry_price = self.contract.marketPrice() or stop_price + (stop_price*0.01) # fallback
+
                 self.entry_time = datetime.now()
                 self.position_size = shares
-                
-                # Save reference to stop order (which is already active on server!)
                 self.current_stop_order = stop_loss
                 self.stop_price = stop_price
                 self.current_position = parent_trade
                 
-                logger.info(f"✅ Bracket Executed. Entry: {fill_price}, Active Stop: {stop_price}")
-                # Send execution confirmation to dashboard
-                redis_publisher.log("success", f"✅ POSITION OPENED: {shares} shares @ ${fill_price:.2f}")
-
+                logger.info(f"✅ Order Accepted/Filled. Size: {shares}")
+                redis_publisher.log("success", f"✅ POSITION OPENED: {shares} shares")
                 self.broadcast_position_update()
-
                 return True
+            elif status in ['Inactive', 'Cancelled', 'PendingCancel']:
+                # Fallimento (Probabile errore Margine o altro)
+                reason = parent_trade.log[-1].message if parent_trade.log else "Unknown reason"
+                logger.warning(f"⚠️ Order Rejected: {status}. Reason: {reason}")
+                redis_publisher.log("warning", f"⚠️ Order Rejected: {status}. Reason: {reason}")
+                
+                # --- RETRY LOGIC ---
+                # Riduciamo la size del 10% e riproviamo
+                new_shares = int(shares * 0.90)
+                if new_shares < 1:
+                    return False
+                
+                logger.info(f"🔄 Retrying with reduced size: {new_shares} shares...")
+                redis_publisher.log("warning", f"🔄 Retry {attempt}/3: Reducing size to {new_shares}")
+                
+                return self.open_long_position(new_shares, stop_price, attempt + 1)
+
             else:
-                logger.warning(f"Entry Order not immediate: {parent_trade.orderStatus.status}")
-                redis_publisher.log("warning", f"⚠️ Order not filled: {parent_trade.orderStatus.status}")
-                return False
+                # Stati transitori, consideriamo inviato
+                return True
 
         except Exception as e:
             logger.error(f"Bracket Order Error: {e}")

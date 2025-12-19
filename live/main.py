@@ -211,7 +211,7 @@ class TradingBot:
             if not self.is_market_open():
                 return
             
-            logger.info(f"[{current_time.strftime('%H:%M:%S')}] Processing new 5 minute candle...")
+            logger.info(f"📊 New 5min candle: {current_time.strftime('%H:%M:%S')}")
             redis_publisher.log("debug", f"📊 New 5min candle: {current_time.strftime('%H:%M:%S')}")
             
             # 1. Update data

@@ -102,7 +102,11 @@ class ConnectionManager:
             if not payload:
                 self.current_state["active_position"] = None
             else:
-                self.current_state["active_position"] = payload
+                # If the payload is a list (from bot), take the first element
+                if isinstance(payload, list) and len(payload) > 0:
+                    self.current_state["active_position"] = payload[0]
+                else:
+                    self.current_state["active_position"] = payload
         
         elif message_type == "log":
             # Add log and keep only the last 50
