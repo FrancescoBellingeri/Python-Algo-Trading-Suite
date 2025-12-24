@@ -3,6 +3,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import asyncio
 import ib_insync
+from ib_insync import StopOrder
 from src.ib_connector import IBConnector
 from src.data_handler import DataHandler
 from src.database import DatabaseHandler
@@ -95,49 +96,135 @@ class TradingBot:
             
             ib = self.connector.ib
 
-            # 1. Find position
-            positions = ib.positions()
+            # CRITICAL FIX: Request ALL open orders from the account (even from previous sessions)
+            ib.reqAllOpenOrders() 
+            # Give it a moment to populate the local cache
+            ib.sleep(1)
+
+            # 1. Find position with retries
             target_pos = None
-            for p in positions:
-                if p.contract.symbol == config.SYMBOL and p.position > 0:
-                    target_pos = p
-                    break
+            stop_order_found = None
             
+            # We wait up to 2 seconds (4 x 0.5s) for IB to sync positions and orders
+            for i in range(5):
+                logger.info(f"Sync attempt {i+1}/5...")
+                
+                # Update collections
+                positions = ib.positions()
+                open_trades = ib.openTrades()
+                open_orders = ib.openOrders() # Now this should contain everything
+                
+                # Check for position
+                for p in positions:
+                    if p.contract.symbol == config.SYMBOL and p.position > 0:
+                        target_pos = p
+                        break
+                
+                if target_pos:
+                    # Strategy 1: Look in openTrades (Active trades with status)
+                    for trade in open_trades:
+                        if (trade.contract.symbol == config.SYMBOL and 
+                            trade.order.orderType in ['STP', 'TRAIL'] and 
+                            trade.order.action == 'SELL'):
+                            stop_order_found = trade.order
+                            break
+                    
+                    # Strategy 2: Look in openOrders (Raw orders list)
+                    if not stop_order_found:
+                        for order in open_orders:
+                            if (order.orderType in ['STP', 'TRAIL'] and 
+                                order.action == 'SELL'):
+                                # Verify symbol if possible, or assume it matches if it's the only active stop
+                                # Note: order objects in openOrders might not have full contract info attached directly
+                                # so we rely on the order properties
+                                stop_order_found = order
+                                break
+
+                    # If we found both position and stop, we are good
+                    if stop_order_found:
+                        logger.info(f"✅ Found orphaned Stop Loss: ID {stop_order_found.orderId} @ ${stop_order_found.auxPrice} (Client {stop_order_found.clientId})")
+                
+                        # VERIFICA CRUCIALE: Ownership check
+                        # Se l'ordine appartiene a un altro ClientID (sessione precedente), NON possiamo modificarlo.
+                        # Dobbiamo cancellarlo e ricrearlo per prenderne il controllo.
+                        current_client_id = self.connector.ib.client.clientId
+                        
+                        if stop_order_found.clientId != current_client_id:
+                            logger.warning(f"⚠️ Stop Order belongs to old ClientID ({stop_order_found.clientId}). Performing Cancel & Replace to take ownership...")
+                            
+                            # 1. Try to cancel the old order (ignore errors if already gone)
+                            try:
+                                ib.cancelOrder(stop_order_found)
+                            except Exception:
+                                pass
+                            
+                            # 2. Create a NEW StopOrder (clean)
+                            ib.sleep(0.5)  # Wait for cancellation to process
+                            
+                            new_stop_order = StopOrder('SELL', target_pos.position, float(stop_order_found.auxPrice))
+                            new_stop_order.tif = 'DAY'
+                            new_stop_order.outsideRth = False
+                            
+                            # 3. Place new order using SMART routing (not direct NASDAQ)
+                            trade = ib.placeOrder(self.execution.contract, new_stop_order)
+                            ib.sleep(0.5)
+                            
+                            # Check if order was accepted
+                            if trade.orderStatus.status in ['PreSubmitted', 'Submitted']:
+                                self.execution.current_stop_order = trade.order
+                                self.execution.stop_price = float(stop_order_found.auxPrice)
+                                logger.info(f"✅ Ownership reclaimed. New Stop Order ID: {trade.order.orderId}")
+                                redis_publisher.log("success", f"✅ Stop Loss Replaced & Synced @ ${self.execution.stop_price:.2f}")
+                            else:
+                                logger.error(f"❌ Failed to create new stop: {trade.orderStatus.status}")
+                                redis_publisher.send_error(f"Failed to create stop during sync")
+
+                        else:
+                            # Se il ClientID è lo stesso (es. riconnessione rapida stessa sessione),
+                            # potremmo riuscire a modificarlo, ma resettiamo comunque parentId
+                            stop_order_found.parentId = 0
+                            self.execution.current_stop_order = stop_order_found
+                            self.execution.stop_price = stop_order_found.auxPrice
+                            logger.info(f"✅ Resumed control of existing Stop Order ID {stop_order_found.orderId}")
+                        break
+                else:
+                    # If we don't even have a position yet, maybe it's still syncing
+                    pass
+                
+                ib.sleep(0.5)
+
             if not target_pos:
-                logger.info("No open position on IB.")
+                logger.info("✅ No open position detected after sync.")
                 redis_publisher.log("info", "✅ No open position detected")
-
-                self.current_position = None
-                self.position_size = 0
-                self.entry_price = None
-                self.stop_price = None
-                self.current_stop_order = None
-
+                
+                self.execution.current_position = None
+                self.execution.position_size = 0
+                self.execution.entry_price = None
+                self.execution.stop_price = None
+                self.execution.current_stop_order = None
                 self.execution.broadcast_position_update()
                 return None
             
-            # 2. Update state
+            # 2. Update state with found position
             self.in_position = True
             self.execution.position_size = target_pos.position
             self.execution.entry_price = target_pos.avgCost
             logger.info(f"Found position: {self.execution.position_size} shares @ avg ${self.execution.entry_price:.2f}")
             redis_publisher.log("warning", f"⚠️ EXISTING POSITION: {self.execution.position_size} shares @ ${self.execution.entry_price:.2f}")
             
-            # 3. Find active stop order
-            open_trades = ib.openTrades()
-            
-            for trade in open_trades:
-                # Trade has both .contract and .order
-                if (trade.contract.symbol == config.SYMBOL and 
-                    trade.order.orderType in ['STP', 'TRAIL'] and 
-                    trade.order.action == 'SELL'):
-                    
-                    self.execution.current_stop_order = trade.order  # Save Order, not Trade
-                    self.execution.stop_price = trade.order.auxPrice
-                    logger.info(f"Found active Stop Loss: ID {trade.order.orderId} @ ${trade.order.auxPrice}")
-                    redis_publisher.log("success", f"✅ Active Stop Loss found @ ${trade.order.auxPrice:.2f}")
-
-                    break
+            # 3. Update state with found stop order
+            if stop_order_found:
+                # CRITICAL: Reset parentId to make it a standalone order
+                # This prevents Error 135 when modifying after parent is filled
+                stop_order_found.parentId = 0
+                self.execution.current_stop_order = stop_order_found
+                self.execution.stop_price = stop_order_found.auxPrice
+                logger.info(f"✅ Found active Stop Loss: ID {stop_order_found.orderId} @ ${stop_order_found.auxPrice}")
+                redis_publisher.log("success", f"✅ Active Stop Loss found @ ${stop_order_found.auxPrice:.2f}")
+            else:
+                logger.error("❌ CRITICAL: Position found but NO STOP LOSS detected after sync!")
+                redis_publisher.send_error("Position found but NO STOP LOSS detected!")
+                # Optional: You could create a new emergency stop here if needed
 
             # Broadcast initial state
             self.execution.broadcast_position_update()
@@ -147,7 +234,6 @@ class TradingBot:
         except Exception as e:
             logger.error(f"Sync error: {e}")
             redis_publisher.send_error(f"Synchronization error: {str(e)}")
-            
             return None
 
     def is_market_open(self):
@@ -224,16 +310,23 @@ class TradingBot:
             # 2. Calculate indicators (incremental)
             df = self.indicator_calculator.calculate_incremental(df)
             
-            # 3. Check signals (commented in your original code)
+            # 3. Check signals
             if not self.in_position:
                 signal = self.execution.check_entry_signals(df)
                 if signal:
                     self.in_position = True
             else:
-                if self.execution.check_exit_signals(df):
-                    logger.info("Trade closed because conditions no longer met")
+                # First check if stop loss was triggered
+                if self.execution.check_stop_loss_triggered():
+                    logger.info("🔄 Position closed by stop loss - resetting state")
+                    redis_publisher.log("info", "🔄 Position closed by stop loss")
+                    self.in_position = False
+                elif self.execution.check_exit_signals(df):
+                    logger.info("🔄 Position closed by exit signal - resetting state")
+                    redis_publisher.log("info", "🔄 Position closed by exit signal")
                     self.in_position = False
                 else:
+                    # Position still open - update trailing stop
                     self.execution.update_trailing_stop(df)
 
             self.connector._send_account_info()

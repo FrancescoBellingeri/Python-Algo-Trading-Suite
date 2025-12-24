@@ -23,7 +23,7 @@ class IBConnector:
             await self.ib.connectAsync(
                 host=IB_HOST,
                 port=IB_PORT,
-                clientId=int(time.time()) % 10000,
+                clientId=IB_CLIENT_ID,
                 timeout=15
             )
             

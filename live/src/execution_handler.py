@@ -41,58 +41,90 @@ class ExecutionHandler:
         # Send initial info to dashboard
         logger.info(f"ExecutionHandler initialized - Capital: ${capital:,.0f}")
         redis_publisher.log("info", f"💰 ExecutionHandler initialized - Capital: ${capital:,.0f}")
+        
+        # Sottoscrizione ai dati dell'account (necessaria per popolare accountSummary)
+        self.ib.reqAccountSummary()
 
     def get_available_margin(self):
         """
-        Recupera i fondi disponibili effettivi (AvailableFunds) dall'account.
-        Questo valore indica quanto margine libero hai per aprire nuove posizioni.
+        Retrieves available funds with a retry mechanism and fallback.
         """
-        try:
-            # Richiede un aggiornamento rapido del sommario account
-            tags = 'AvailableFunds,NetLiquidation'
-            summary = self.ib.accountSummary(group='All', tags=tags)
+        # 0. Helper to find value in a list of IBKR objects
+        target_tags = ['AvailableFunds', 'TotalCashValue', 'NetLiquidation', 'BuyingPower', 'CashBalance']
+        
+        def find_value_in_list(items):
+            for item in items:
+                if item.tag in target_tags:
+                    # Check currency (allow base currency or bot currency)
+                    if item.currency == CURRENCY or item.currency == 'BASE' or item.currency == '':
+                        try:
+                            val = float(item.value)
+                            if val > 0: return val
+                        except ValueError:
+                            continue
+            return None
+
+        # 1. Quick Check (Cache/Live)
+        val = find_value_in_list(self.ib.accountValues())
+        if val: 
+            self.last_available_funds = val
+            return val
+
+        val = find_value_in_list(self.ib.accountSummary())
+        if val:
+            self.last_available_funds = val
+            return val
+
+        # 2. If 0, Force Wait (The "Kickstart")
+        logger.warning("⚠️ Funds appear to be 0. Waiting for data sync (Max 3s)...")
+        
+        # We try 15 times x 0.2s = 3 seconds max wait
+        for i in range(15):
+            self.ib.sleep(0.2) # CRITICAL: ib.sleep allows incoming network messages to be processed
             
-            avail_funds = 0.0
-            for item in summary:
-                if item.tag == 'AvailableFunds' and item.currency == 'EUR': # O 'USD' in base al tuo conto base
-                    avail_funds = float(item.value)
-                    self.last_available_funds = avail_funds
-                if item.tag == 'NetLiquidation' and item.currency == 'EUR':
-                    self.capital = float(item.value)
+            # Re-check Summary
+            val = find_value_in_list(self.ib.accountSummary())
+            if val:
+                logger.info(f"✅ Data received after {i*0.2:.1f}s: ${val:,.2f}")
+                self.last_available_funds = val
+                return val
+        
+        # 3. DEBUG: If still failing, print what tags WE DO HAVE to the log
+        logger.error("❌ TIMEOUT: Could not fetch margin data from IBKR.")
+        logger.info("--- DUMPING AVAILABLE TAGS ---")
+        found_tags = [f"{x.tag}={x.value} ({x.currency})" for x in self.ib.accountSummary()]
+        logger.info(str(found_tags[:10])) # Print first 10 tags
+        
+        # 4. Fallback (The "Show Must Go On" Fix)
+        # If we can't read the balance, we use the self.capital (25k) setting 
+        # so the bot doesn't freeze.
+        if self.capital > 0:
+            logger.warning(f"⚠️ Using fallback capital: ${self.capital:,.2f}")
+            return self.capital
             
-            return avail_funds
-        except Exception as e:
-            logger.error(f"Error fetching account margin: {e}")
-            return self.last_available_funds
+        return 0.0
     
-    def calculate_position_size(self, entry_price, stop_loss, leverage=1.95):
-        """
-        Calculates the number of contracts (or shares) to buy considering:
-        - risk per trade in percentage,
-        - leverage,
-        - maximum absolute loss allowed in dollars.
-        """
-
-        # 1. Fetch available margin
+    def calculate_position_size(self, entry_price, stop_loss):
+        # 1. Fetch available funds
         available_funds = self.get_available_margin()
-        
+
         if available_funds <= 0:
-            logger.error(f"Available Funds too low: {available_funds}")
-            redis_publisher.send_error(f"Available Funds too low: {available_funds}")
+            logger.error("❌ Sizing failed: Available funds is 0 or negative.")
             return 0
 
-        max_trade_value_margin = available_funds * 0.70
-        max_shares_margin = int(max_trade_value_margin / entry_price)
-
-        # Risk per contract
-        R = abs(entry_price - stop_loss)
-        if R == 0 or R < 0.01:  # minimal symbolic risk to avoid division by zero
-            return 0
-
+        # 2. Risk Management Calculation
         risk_dollars = self.capital * self.base_risk
-        risk_based_size = risk_dollars / R
+        risk_per_share = abs(entry_price - stop_loss)
         
-        final_size = min(risk_based_size, max_shares_margin)
+        if risk_per_share < 0.01: 
+            logger.warning("❌ Sizing failed: Risk per share too small (Stop too close to Entry).")
+            return 0
+        
+        # Size based on Risk
+        risk_based_size = int(risk_dollars / risk_per_share)
+        margin_based_size = int((available_funds * 0.95) / entry_price)
+        
+        final_size = min(risk_based_size, margin_based_size)
 
         return final_size
     
@@ -127,8 +159,7 @@ class ExecutionHandler:
         
             shares = self.calculate_position_size(
                     entry_price=entry_price,
-                    stop_loss=trailing_stop_price,
-                    leverage=1.95
+                    stop_loss=trailing_stop_price
                 )
         
             if shares <= 0:
@@ -136,8 +167,14 @@ class ExecutionHandler:
                 redis_publisher.log("warning", "⚠️ Position size = 0, trade cancelled")
                 return False
 
+            shares_validated = self.validate_order_size(self.contract, shares)
+
+            if shares_validated <= 0:
+                logger.warning("❌ Ordine annullato dopo check margine (Size 0).")
+                return False
+
             # Place order
-            return self.open_long_position(shares, trailing_stop_price)
+            return self.open_long_position(shares_validated, trailing_stop_price)
 
         return False
     
@@ -172,22 +209,22 @@ class ExecutionHandler:
             return False
 
         try:
+            self.ib.qualifyContracts(self.contract)
             logger.info(f"📈 Sending Bracket Order: Buy {shares} @ MKT, Stop @ {stop_price}")
             redis_publisher.log("info", f"📈 Sending order: BUY {shares} shares @ MARKET, Stop Loss @ ${stop_price:.2f}")
 
             # 1. Parent Order (Entry)
             parent = MarketOrder('BUY', shares)
             parent.transmit = False # <--- DO NOT SEND YET!
-            parent.tif = 'GTC'
+            parent.tif = 'DAY'
             
             # 2. Child Order (Stop Loss)
             stop_loss = StopOrder('SELL', shares, stop_price)
             stop_loss.outsideRth = False
-            stop_loss.tif = 'GTC'
-            stop_loss.parentId = parent.orderId
+            stop_loss.tif = 'DAY'
             stop_loss.transmit = True # <--- This will send the whole package
-            
             parent_trade = self.ib.placeOrder(self.contract, parent)
+            stop_loss.parentId = parent_trade.order.orderId
             stop_trade = self.ib.placeOrder(self.contract, stop_loss)
             
             logger.info(f"Orders sent. Parent ID: {parent.orderId}, Stop ParentId: {stop_loss.parentId}")
@@ -199,12 +236,20 @@ class ExecutionHandler:
             status = parent_trade.orderStatus.status
             
             if status in ['Filled', 'PreSubmitted', 'Submitted']:
-                # Successo!
                 if status == 'Filled':
-                    fill_price = parent_trade.orderStatus.avgFillPrice
-                    self.entry_price = fill_price
+                    self.entry_price = parent_trade.orderStatus.avgFillPrice
                 else:
-                    self.entry_price = self.contract.marketPrice() or stop_price + (stop_price*0.01) # fallback
+                    # --- RECUPERO ROBUSTO DEL PREZZO ---
+                    # Richiediamo i dati di mercato se non sono presenti
+                    ticker = self.ib.reqMktData(self.contract, '', False, False)
+                    self.ib.sleep(0.5) # Tempo tecnico per ricevere lo snapshot
+                    
+                    if ticker and ticker.marketPrice() == ticker.marketPrice(): # Check se NON è NaN
+                        self.entry_price = ticker.marketPrice()
+                    else:
+                        # Fallback finale: prezzo stimato per non rompere il tracking
+                        self.entry_price = stop_price + (stop_price * 0.01)
+                        logger.warning(f"Ticker non disponibile, uso fallback price: {self.entry_price}")
 
                 self.entry_time = datetime.now()
                 self.position_size = shares
@@ -212,7 +257,7 @@ class ExecutionHandler:
                 self.stop_price = stop_price
                 self.current_position = parent_trade
                 
-                logger.info(f"✅ Order Accepted/Filled. Size: {shares}")
+                logger.info(f"✅ Position Tracked. Size: {shares} @ approx ${self.entry_price:.2f}")
                 redis_publisher.log("success", f"✅ POSITION OPENED: {shares} shares")
                 self.broadcast_position_update()
                 return True
@@ -270,7 +315,7 @@ class ExecutionHandler:
             new_stop_price = round(last_candle['close'] - risk_per_share, 2)
             
             if new_stop_price <= self.stop_price:
-                logger.debug(f"New stop ${new_stop_price:.2f} not better than current ${self.stop_price:.2f}")
+                logger.info(f"New stop ${new_stop_price:.2f} not better than current ${self.stop_price:.2f}")
                 redis_publisher.log("success", f"New stop ${new_stop_price:.2f} not better than current ${self.stop_price:.2f}")
                 return False
             
@@ -348,6 +393,90 @@ class ExecutionHandler:
         except Exception as e:
             logger.error(f"Error closing position: {e}")
             redis_publisher.send_error(f"Closure error: {str(e)}")
+            return False
+    
+    def check_stop_loss_triggered(self):
+        """
+        Checks if the stop loss order was triggered/filled.
+        If triggered, saves the trade to DB and resets state.
+        
+        Returns:
+            bool: True if stop was triggered, False otherwise
+        """
+        try:
+            # If we don't think we have a position, nothing to check
+            if not self.position_size or self.position_size <= 0:
+                return False
+            
+            # Check actual IB position
+            actual_position = 0
+            for pos in self.ib.positions():
+                if pos.contract.symbol == SYMBOL:
+                    actual_position = pos.position
+                    break
+            
+            # If IB shows no position but we think we have one, stop was triggered
+            if actual_position == 0 and self.position_size > 0:
+                logger.info("🔍 Detected position closed - checking stop order status...")
+                
+                # Try to get fill details from the stop order
+                exit_price = self.stop_price  # Default to stop price
+                exit_time = datetime.now(ZoneInfo("America/New_York"))
+                
+                # Look for the filled stop order to get exact exit price
+                if self.current_stop_order:
+                    for trade in self.ib.trades():
+                        if trade.order.orderId == self.current_stop_order.orderId:
+                            if trade.orderStatus.status == 'Filled':
+                                exit_price = trade.orderStatus.avgFillPrice
+                                if trade.fills:
+                                    exit_time = trade.fills[-1].time
+                                logger.info(f"📋 Stop order filled @ ${exit_price:.2f}")
+                            break
+                
+                # Calculate P&L
+                if self.entry_price:
+                    pnl = (exit_price - self.entry_price) * self.position_size
+                    pnl_percent = (pnl / self.capital) * 100
+                else:
+                    pnl = 0.0
+                    pnl_percent = 0.0
+                
+                # Log the trade closure
+                logger.info(f"🛑 STOP LOSS TRIGGERED @ ${exit_price:.2f}")
+                logger.info(f"💰 P&L: ${pnl:.2f} ({pnl_percent:.2f}%)")
+                redis_publisher.log("warning", f"🛑 STOP LOSS TRIGGERED @ ${exit_price:.2f} - P&L: ${pnl:.2f}")
+                
+                # Save trade to database (convert numpy types to native Python)
+                self.db.save_trade(
+                    symbol=SYMBOL,
+                    entry_price=float(self.entry_price or exit_price),
+                    exit_price=float(exit_price),
+                    quantity=int(self.position_size),
+                    entry_time=self.entry_time,
+                    exit_time=exit_time,
+                    pnl_dollar=float(pnl),
+                    pnl_percent=float(pnl_percent),
+                    exit_reason="TRAILING_STOP"
+                )
+                
+                # Reset internal state
+                self.current_position = None
+                self.current_stop_order = None
+                self.entry_price = None
+                self.entry_time = None
+                self.stop_price = None
+                self.position_size = 0
+                
+                # Notify dashboard
+                self.broadcast_position_update()
+                
+                return True
+            
+            return False
+            
+        except Exception as e:
+            logger.error(f"Error checking stop loss: {e}")
             return False
         
     def has_position(self):
@@ -438,3 +567,40 @@ class ExecutionHandler:
         except Exception as e:
             logger.error(f"Error broadcasting position update: {e}")
             return None
+
+    def validate_order_size(self, contract, intended_shares):
+        available_funds = self.get_available_margin()
+        safe_funds = available_funds * 0.95
+        
+        # Use a simpler Market Order for the check
+        check_order = MarketOrder('BUY', intended_shares)
+        
+        try:
+            # whatIfOrder returns an OrderState object
+            order_state = self.ib.whatIfOrder(contract, check_order)
+            
+            # --- THE FIX ---
+            # Extract initMarginChange safely
+            # Sometimes it's on the object directly, sometimes it needs to be cast
+            raw_margin = getattr(order_state, 'initMarginChange', "0")
+            required_margin = float(raw_margin)
+            
+            if required_margin > 1e10: # Check for "Infinity" sentinel value
+                logger.warning("⚠️ Margin requirement returned as Infinity. Proceeding with caution.")
+                return intended_shares 
+
+            logger.info(f"🔎 Margin Check: Required ${required_margin:,.2f} | Available: ${safe_funds:,.2f}")
+
+            if required_margin > safe_funds:
+                reduction_ratio = safe_funds / required_margin
+                new_size = int(intended_shares * reduction_ratio)
+                new_size = max(0, new_size - 1) 
+                logger.warning(f"⚠️ Insufficient Margin. Reducing: {intended_shares} -> {new_size}")
+                return new_size
+            
+            return intended_shares
+
+        except Exception as e:
+            # If whatIf fails, we fallback to our own calculation rather than returning 0
+            logger.error(f"whatIfOrder failed: {e}. Falling back to risk-based size.")
+            return intended_shares
