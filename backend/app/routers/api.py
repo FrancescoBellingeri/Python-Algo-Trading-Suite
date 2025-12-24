@@ -8,7 +8,7 @@ router = APIRouter(prefix="/api")
 # --- HEALTH CHECK & STATUS ---
 @router.get("/status")
 async def get_status():
-    """Stato dettagliato del sistema per il footer della dashboard"""
+    """Detailed system status for the dashboard footer"""
     return {
         "server": {
             "status": "online",
@@ -26,17 +26,17 @@ async def get_status():
 # --- LIVE STATE (DEBUG) ---
 @router.get("/state")
 async def get_current_state():
-    """Snapshot dello stato in memoria (utile per debug se il WS non va)"""
+    """Memory state snapshot (useful for debugging if WS is down)"""
     return manager.current_state
 
-# --- DATABASE: HISTORY & STATS (NUOVI) ---
+# --- DATABASE: HISTORY & STATS (NEW) ---
 @router.get("/history")
 async def get_trade_history(
     limit: int = 50, 
     offset: int = 0, 
     symbol: Optional[str] = None
 ):
-    """Storico trade dal DB PostgreSQL"""
+    """Trade history from PostgreSQL DB"""
     try:
         trades = db_handler.get_trades(limit=limit, offset=offset, symbol=symbol)
         total = db_handler.get_total_trade_count(symbol=symbol)
@@ -46,7 +46,7 @@ async def get_trade_history(
 
 @router.get("/stats")
 async def get_trade_stats(symbol: Optional[str] = None):
-    """Statistiche aggregate dal DB"""
+    """Aggregate statistics from the DB"""
     try:
         return db_handler.calculate_stats(symbol=symbol)
     except Exception as e:
@@ -55,7 +55,7 @@ async def get_trade_stats(symbol: Optional[str] = None):
 # --- COMMANDS ---
 @router.post("/command")
 async def send_command(command: dict):
-    """Invia comandi manuali al bot via Redis"""
+    """Send manual commands to the bot via Redis"""
     if not redis_manager.async_client:
         raise HTTPException(status_code=503, detail="Redis not connected")
     

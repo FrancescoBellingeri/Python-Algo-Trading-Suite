@@ -42,7 +42,7 @@ class ExecutionHandler:
         logger.info(f"ExecutionHandler initialized - Capital: ${capital:,.0f}")
         redis_publisher.log("info", f"💰 ExecutionHandler initialized - Capital: ${capital:,.0f}")
         
-        # Sottoscrizione ai dati dell'account (necessaria per popolare accountSummary)
+        # Subscription to account data (necessary to populate accountSummary)
         self.ib.reqAccountSummary()
 
     def get_available_margin(self):
@@ -170,7 +170,8 @@ class ExecutionHandler:
             shares_validated = self.validate_order_size(self.contract, shares)
 
             if shares_validated <= 0:
-                logger.warning("❌ Ordine annullato dopo check margine (Size 0).")
+                logger.warning("❌ Order cancelled after margin check (Size 0).")
+                redis_publisher.log("warning", "❌ Order cancelled after margin check (Size 0).")
                 return False
 
             # Place order
@@ -239,17 +240,18 @@ class ExecutionHandler:
                 if status == 'Filled':
                     self.entry_price = parent_trade.orderStatus.avgFillPrice
                 else:
-                    # --- RECUPERO ROBUSTO DEL PREZZO ---
-                    # Richiediamo i dati di mercato se non sono presenti
+                    # --- ROBUST PRICE RECOVERY ---
+                    # Request market data if not present
                     ticker = self.ib.reqMktData(self.contract, '', False, False)
-                    self.ib.sleep(0.5) # Tempo tecnico per ricevere lo snapshot
+                    self.ib.sleep(0.5) # Technical time to receive snapshot
                     
-                    if ticker and ticker.marketPrice() == ticker.marketPrice(): # Check se NON è NaN
+                    if ticker and ticker.marketPrice() == ticker.marketPrice(): # Check if NOT NaN
                         self.entry_price = ticker.marketPrice()
                     else:
-                        # Fallback finale: prezzo stimato per non rompere il tracking
+                        # Final fallback: estimated price to avoid breaking tracking
                         self.entry_price = stop_price + (stop_price * 0.01)
-                        logger.warning(f"Ticker non disponibile, uso fallback price: {self.entry_price}")
+                        logger.warning(f"Ticker not available, using fallback price: {self.entry_price}")
+                        redis_publisher.log("warning", f"Ticker not available, using fallback price: {self.entry_price}")
 
                 self.entry_time = datetime.now()
                 self.position_size = shares
@@ -262,13 +264,13 @@ class ExecutionHandler:
                 self.broadcast_position_update()
                 return True
             elif status in ['Inactive', 'Cancelled', 'PendingCancel']:
-                # Fallimento (Probabile errore Margine o altro)
+                # Failure (Likely Margin error or other)
                 reason = parent_trade.log[-1].message if parent_trade.log else "Unknown reason"
                 logger.warning(f"⚠️ Order Rejected: {status}. Reason: {reason}")
                 redis_publisher.log("warning", f"⚠️ Order Rejected: {status}. Reason: {reason}")
                 
                 # --- RETRY LOGIC ---
-                # Riduciamo la size del 10% e riproviamo
+                # Reduce the size by 10% and retry
                 new_shares = int(shares * 0.90)
                 if new_shares < 1:
                     return False

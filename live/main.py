@@ -144,9 +144,9 @@ class TradingBot:
                     if stop_order_found:
                         logger.info(f"✅ Found orphaned Stop Loss: ID {stop_order_found.orderId} @ ${stop_order_found.auxPrice} (Client {stop_order_found.clientId})")
                 
-                        # VERIFICA CRUCIALE: Ownership check
-                        # Se l'ordine appartiene a un altro ClientID (sessione precedente), NON possiamo modificarlo.
-                        # Dobbiamo cancellarlo e ricrearlo per prenderne il controllo.
+                        # CRITICAL VERIFICATION: Ownership check
+                        # If the order belongs to another ClientID (previous session), we cannot modify it.
+                        # We must cancel and recreate it to take control.
                         current_client_id = self.connector.ib.client.clientId
                         
                         if stop_order_found.clientId != current_client_id:
@@ -180,8 +180,8 @@ class TradingBot:
                                 redis_publisher.send_error(f"Failed to create stop during sync")
 
                         else:
-                            # Se il ClientID è lo stesso (es. riconnessione rapida stessa sessione),
-                            # potremmo riuscire a modificarlo, ma resettiamo comunque parentId
+                            # If the ClientID is the same (e.g., fast reconnection same session),
+                            # we might be able to modify it, but we reset parentId anyway
                             stop_order_found.parentId = 0
                             self.execution.current_stop_order = stop_order_found
                             self.execution.stop_price = stop_order_found.auxPrice

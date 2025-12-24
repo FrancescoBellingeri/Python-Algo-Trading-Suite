@@ -3,7 +3,7 @@ from src.logger import logger
 from src.redis_publisher import redis_publisher
 from config import IB_HOST, IB_PORT, IB_CLIENT_ID
 from datetime import datetime
-import time
+import sys
 
 class IBConnector:
     """Handles connection to Interactive Brokers."""
@@ -126,6 +126,7 @@ class IBConnector:
             def on_disconnected():
                 self.connected = False
                 redis_publisher.log("error", "❌ IB Disconnected unexpectedly")
+                sys.exit(1)
             
             # Register handlers
             self.ib.errorEvent += on_error
