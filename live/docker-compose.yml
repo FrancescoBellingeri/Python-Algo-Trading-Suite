@@ -5,19 +5,18 @@ services:
     container_name: ib-gateway
     restart: always
     environment:
-      # Credenziali dal file .env
       TWS_USERID: ${TWS_USERID}
       TWS_PASSWORD: ${TWS_PASSWORD}
       TRADING_MODE: ${TRADING_MODE}
       VNC_SERVER_PASSWORD: ${VNC_PASSWORD}
-
-      # Impostazioni Critiche per l'automazione
       TWS_SETTINGS_PATH: /home/ibgateway/Jts
-      TWOFA_TIMEOUT_ACTION: restart # Se fallisce 2FA, riprova
+      TWOFA_TIMEOUT_ACTION: ${TWOFA_TIMEOUT_ACTION}
+      EXISTING_SESSION_DETECTED_ACTION: ${EXISTING_SESSION_DETECTED_ACTION}
+      RELOGIN_AFTER_TWOFA_TIMEOUT: ${RELOGIN_AFTER_TWOFA_TIMEOUT}
+      AUTO_RESTART_TIME: ${AUTO_RESTART_TIME}
       TZ: America/New_York
-      AUTO_RESTART_TIME: "01:00 AM" # Riavvia tutto alle 1 di notte (prima del pre-market)
-      ALLOW_BLIND_TRADING: "yes" # Fondamentale per non bloccare gli ordini
-      READ_ONLY_API: "no" # Permette di inviare ordini
+      ALLOW_BLIND_TRADING: "yes"
+      READ_ONLY_API: "no"
 
     ports:
       - "4002:4002"

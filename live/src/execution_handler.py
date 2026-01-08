@@ -189,6 +189,9 @@ class ExecutionHandler:
         Returns:
             bool: True if trade was closed 
         """
+
+        logger.info("Checking exit signals...")
+        redis_publisher.log("info", "Checking exit signals...")
         
         if not self.has_position():
             logger.warning("No open positions")
