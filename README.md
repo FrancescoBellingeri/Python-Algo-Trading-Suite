@@ -205,14 +205,14 @@ DATABASE_URL=postgresql://user:password@localhost:5432/trading_db
 REDIS_URL=redis://localhost:6379/0
 
 # API Settings
-CORS_ORIGINS=http://localhost:5173
+CORS_ORIGINS=http://localhost:5174
 ```
 
 #### 3. Dashboard Configuration (`/dashboard/.env.development`)
 
 ```bash
-VITE_API_BASE_URL=http://localhost:8000
-VITE_WS_URL=ws://localhost:8000/ws
+VITE_API_BASE_URL=http://localhost:8002
+VITE_WS_URL=ws://localhost:8002/ws
 ```
 
 ### Running the Project Locally
@@ -241,7 +241,7 @@ pip install -r requirements.txt
 python -m app.run_server
 ```
 
-The backend will be available at `http://localhost:8000`
+The backend will be available at `http://localhost:8002`
 
 #### Terminal 3: Start the Dashboard
 
@@ -251,10 +251,10 @@ npm install
 npm run dev
 ```
 
-The dashboard will be available at `http://localhost:5173`
+The dashboard will be available at `http://localhost:5174`
 
 ### Verification
 
 1. **Check TWS Connection:** The bot should log "Connected to Interactive Brokers" if TWS is running.
-2. **Check Backend:** Visit `http://localhost:8000/docs` to see the FastAPI Swagger documentation.
-3. **Check Dashboard:** Open `http://localhost:5173` to see real-time positions and P&L updates.
+2. **Check Backend:** Visit `http://localhost:8002/docs` to see the FastAPI Swagger documentation.
+3. **Check Dashboard:** Open `http://localhost:5174` to see real-time positions and P&L updates.
