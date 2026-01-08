@@ -150,7 +150,7 @@ class ExecutionHandler:
 
             if atr_value <= 0:
                 logger.error("ATR < 0, impossible to execute trade")
-                redis_publisher.send_error("Invalid ATR, trade cancelled")
+                redis_publisher.log("error", "Invalid ATR, trade cancelled")
                 return False
             
             risk_per_share = atr_value * self.atr_multiplier
@@ -209,7 +209,7 @@ class ExecutionHandler:
         """
         if attempt > 3:
             logger.error("❌ Max retries reached. Order aborted.")
-            redis_publisher.send_error("Max retries reached. Order aborted.")
+            redis_publisher.log("error", "Max retries reached. Order aborted.")
             return False
 
         try:
@@ -220,12 +220,13 @@ class ExecutionHandler:
             # 1. Parent Order (Entry)
             parent = MarketOrder('BUY', shares)
             parent.transmit = False # <--- DO NOT SEND YET!
-            parent.tif = 'DAY'
+            parent.tif = 'GTC'
             
             # 2. Child Order (Stop Loss)
             stop_loss = StopOrder('SELL', shares, stop_price)
             stop_loss.outsideRth = False
-            stop_loss.tif = 'DAY'
+            stop_loss.tif = 'GTC'
+            
             stop_loss.transmit = True # <--- This will send the whole package
             parent_trade = self.ib.placeOrder(self.contract, parent)
             stop_loss.parentId = parent_trade.order.orderId
@@ -289,7 +290,7 @@ class ExecutionHandler:
 
         except Exception as e:
             logger.error(f"Bracket Order Error: {e}")
-            redis_publisher.send_error(f"Position opening error: {str(e)}")
+            redis_publisher.log("error", f"Position opening error: {str(e)}")
             return False
 
     def update_trailing_stop(self, df):
@@ -312,7 +313,7 @@ class ExecutionHandler:
 
             if atr_value <= 0:
                 logger.error("ATR < 0, impossible to update stop loss")
-                redis_publisher.send_error("ATR < 0, impossible to update stop loss")
+                redis_publisher.log("error", "ATR < 0, impossible to update stop loss")
                 return False
             
             risk_per_share = atr_value * self.atr_multiplier
@@ -340,7 +341,7 @@ class ExecutionHandler:
             
         except Exception as e:
             logger.error(f"Error updating stop loss: {e}")
-            redis_publisher.send_error(f"Stop update error: {str(e)}")
+            redis_publisher.log("error", f"Stop update error: {str(e)}")
             return False
         
     def close_position(self):
@@ -350,6 +351,15 @@ class ExecutionHandler:
                 logger.warning("No position to close")
                 return False
             
+            # CANCEL EXISTING STOP ORDER IF EXISTS
+            if self.current_stop_order:
+                try:
+                    logger.info(f"Cancelling orphan stop order {self.current_stop_order.orderId} before closing...")
+                    self.ib.cancelOrder(self.current_stop_order)
+                    self.ib.sleep(0.5)
+                except Exception as e:
+                    logger.warning(f"Could not cancel stop order: {e}")
+
             # Place closing market order
             close_order = MarketOrder('SELL', self.position_size)
             trade = self.ib.placeOrder(self.contract, close_order)
@@ -391,13 +401,13 @@ class ExecutionHandler:
                 return True
             
             logger.error(f"Closure failed: {trade.orderStatus.status}")
-            redis_publisher.send_error(f"Position closure failed: {trade.orderStatus.status}")
+            redis_publisher.log("error", f"Position closure failed: {trade.orderStatus.status}")
 
             return False
             
         except Exception as e:
             logger.error(f"Error closing position: {e}")
-            redis_publisher.send_error(f"Closure error: {str(e)}")
+            redis_publisher.log("error", f"Closure error: {str(e)}")
             return False
     
     def check_stop_loss_triggered(self):
@@ -484,6 +494,44 @@ class ExecutionHandler:
             logger.error(f"Error checking stop loss: {e}")
             return False
         
+    def restore_stop_order(self, stop_price):
+        """
+        Restores a missing Stop Loss order.
+        """
+        try:
+            if not self.has_position():
+                logger.warning("Cannot restore stop: No position open")
+                return False
+            
+            logger.info(f"🛡️ Restoring Stop Loss @ ${stop_price:.2f}...")
+            redis_publisher.log("info", f"🛡️ Restoring Stop Loss @ ${stop_price:.2f}...")
+            
+            # Create NEW Stop Order (GTC)
+            restored_stop = StopOrder('SELL', self.position_size, stop_price)
+            restored_stop.tif = 'GTC'
+            restored_stop.outsideRth = False
+            
+            # Place it
+            trade = self.ib.placeOrder(self.contract, restored_stop)
+            self.ib.sleep(0.5)
+            
+            if trade.orderStatus.status in ['PreSubmitted', 'Submitted', 'Filled']:
+                self.current_stop_order = trade.order
+                self.stop_price = stop_price
+                logger.info(f"✅ Stop Loss restored successfully. ID: {trade.order.orderId}")
+                redis_publisher.log("success", f"✅ Stop Loss restored @ ${stop_price:.2f}")
+                self.broadcast_position_update()
+                return True
+            else:
+                logger.error(f"❌ Failed to restore stop: {trade.orderStatus.status}")
+                redis_publisher.log("error", f"Failed to restore stop: {trade.orderStatus.status}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error restoring stop: {e}")
+            redis_publisher.log("error", f"Error restoring stop: {e}")
+            return False
+        
     def has_position(self):
         """Checks if we have an open position."""
         positions = self.ib.positions()
@@ -520,12 +568,12 @@ class ExecutionHandler:
             else:
                 logger.error("Unable to find 'NetLiquidation' value in account data.")
                 redis_publisher.log("error", "❌ NetLiquidation not found in account data")
-                redis_publisher.send_error("Unable to update capital: NetLiquidation not found")
+                redis_publisher.log("error", "Unable to update capital: NetLiquidation not found")
                 return False
 
         except Exception as e:
             logger.error(f"Error updating capital: {e}")
-            redis_publisher.send_error(f"Capital update error: {str(e)}")
+            redis_publisher.log("error", f"Capital update error: {str(e)}")
             return False
         
     def broadcast_position_update(self, current_ema_value=0.0):

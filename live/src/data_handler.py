@@ -81,7 +81,7 @@ class DataHandler:
             return pd.DataFrame
         except Exception as e:
             logger.error(f"Error downloading historical data: {e}")
-            redis_publisher.send_error(f"Error downloading historical data: {str(e)}")
+            redis_publisher.log("error", f"Error downloading historical data: {str(e)}")
             return pd.DataFrame()
     
     def update_data(self, max_retries=10, retry_delay=0.2):
@@ -215,7 +215,7 @@ class DataHandler:
             return pd.DataFrame()
         except Exception as e:
             logger.error(f"Error updating data: {e}")
-            redis_publisher.send_error(f"Error updating data: {str(e)}")
+            redis_publisher.log("error", f"Error updating data: {str(e)}")
             redis_publisher.publish("data-update", {
                 "status": "error",
                 "error": str(e),

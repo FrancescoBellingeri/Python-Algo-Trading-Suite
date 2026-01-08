@@ -42,7 +42,7 @@ class TradingBot:
             # Connect to IB
             self.connector = IBConnector()
             if not await self.connector.connect():
-                redis_publisher.send_error("Unable to connect to IB")
+                redis_publisher.log("error", "Unable to connect to IB")
                 raise Exception("Unable to connect to IB")
             
             if config.WEBSOCKET_ENABLED and redis_publisher.enabled:
@@ -57,13 +57,13 @@ class TradingBot:
 
             if not self.execution.update_capital():
                 logger.error("Capital update failed. Bot stopping for safety.")
-                redis_publisher.send_error("Capital update failed")
+                redis_publisher.log("error", "Capital update failed")
                 return False
             
             df = self.data_handler.download_historical_data()
             if df is None or df.empty:
                 logger.error("Data update error")
-                redis_publisher.send_error("Error retrieving df pre sync")
+                redis_publisher.log("error", "Error retrieving df pre sync")
 
             position_info = self.sync_position_state()
             if position_info:
@@ -78,12 +78,29 @@ class TradingBot:
             logger.info("All components initialized successfully")
             redis_publisher.log("success", "✅ All components initialized")
 
+            # --- STARTUP GAP CHECK ---
+            if self.in_position:
+                try:
+                    current_stop = self.execution.stop_price
+                    if current_stop and not df.empty:
+                         current_price = df.iloc[-1]['close']
+                         if current_price < current_stop:
+                             logger.warning(f"📉 STARTUP GAP DOWN DETECTED! Price ${current_price:.2f} < Stop ${current_stop:.2f}. Closing immediately.")
+                             redis_publisher.log("error", f"📉 STARTUP GAP DOWN DETECTED! Price ${current_price:.2f} < Stop ${current_stop:.2f}. Closing.")
+                             
+                             if self.execution.close_position():
+                                 self.in_position = False
+                                 logger.info("✅ Startup gap protection executed.")
+                                 redis_publisher.log("success", "✅ Startup gap protection executed.")
+                except Exception as e:
+                    logger.error(f"Startup gap check error: {e}")
+            
             self.connector._send_account_info()
 
             return True
         except Exception as e:
             logger.error(f"Initialization error: {e}")
-            redis_publisher.send_error(f"Initialization error: {str(e)}")
+            redis_publisher.log("error", f"Initialization error: {str(e)}")
             return False
    
     def sync_position_state(self):
@@ -162,7 +179,7 @@ class TradingBot:
                             ib.sleep(0.5)  # Wait for cancellation to process
                             
                             new_stop_order = StopOrder('SELL', target_pos.position, float(stop_order_found.auxPrice))
-                            new_stop_order.tif = 'DAY'
+                            new_stop_order.tif = 'GTC'
                             new_stop_order.outsideRth = False
                             
                             # 3. Place new order using SMART routing (not direct NASDAQ)
@@ -175,9 +192,11 @@ class TradingBot:
                                 self.execution.stop_price = float(stop_order_found.auxPrice)
                                 logger.info(f"✅ Ownership reclaimed. New Stop Order ID: {trade.order.orderId}")
                                 redis_publisher.log("success", f"✅ Stop Loss Replaced & Synced @ ${self.execution.stop_price:.2f}")
+                                
+                                stop_order_found = trade.order
                             else:
                                 logger.error(f"❌ Failed to create new stop: {trade.orderStatus.status}")
-                                redis_publisher.send_error(f"Failed to create stop during sync")
+                                redis_publisher.log("error", f"Failed to create stop during sync")
 
                         else:
                             # If the ClientID is the same (e.g., fast reconnection same session),
@@ -223,7 +242,7 @@ class TradingBot:
                 redis_publisher.log("success", f"✅ Active Stop Loss found @ ${stop_order_found.auxPrice:.2f}")
             else:
                 logger.error("❌ CRITICAL: Position found but NO STOP LOSS detected after sync!")
-                redis_publisher.send_error("Position found but NO STOP LOSS detected!")
+                redis_publisher.log("error", "❌ CRITICAL: Position found but NO STOP LOSS detected after sync!")
                 # Optional: You could create a new emergency stop here if needed
 
             # Broadcast initial state
@@ -233,7 +252,7 @@ class TradingBot:
             
         except Exception as e:
             logger.error(f"Sync error: {e}")
-            redis_publisher.send_error(f"Synchronization error: {str(e)}")
+            redis_publisher.log("error", f"❌ Synchronization error: {str(e)}")
             return None
 
     def is_market_open(self):
@@ -263,28 +282,73 @@ class TradingBot:
             df = self.data_handler.download_historical_data()
             if df.empty:
                 logger.error("Data update error")
-                redis_publisher.send_error("Historical data update error")
+                redis_publisher.log("error", "Historical data update error")
                 return
             
             self.indicator_calculator.calculate_all(df)
 
             # --- GAP CHECK LOGIC ---
             if self.in_position:
+                # 1. Check for GAP DOWN Trigger (Open Price < Stop Loss)
+                try:
+                    current_price = df.iloc[-1]['close']
+                    current_stop = self.execution.stop_price
+                    
+                    if current_stop and current_price < current_stop:
+                        logger.warning(f"📉 GAP DOWN DETECTED! Price ${current_price:.2f} < Stop ${current_stop:.2f}. Closing immediately.")
+                        redis_publisher.log("error", f"📉 GAP DOWN DETECTED! Price ${current_price:.2f} < Stop ${current_stop:.2f}. Closing immediately.")
+                        
+                        if self.execution.close_position():
+                            self.in_position = False
+                            logger.info("✅ Gap Down protection executed successfully.")
+                            redis_publisher.log("success", "✅ Gap Down protection executed.")
+                        else:
+                            logger.error("❌ Gap Down protection FAILED to close position.")
+                            redis_publisher.log("error", "Gap Down protection FAILED to close position.")
+                        return
+
+                except Exception as e:
+                    logger.error(f"Error checking gap down: {e}")
+
                 if self.execution.current_stop_order:
                     logger.info("✅ Stop Loss already active. Skipping restore.")
-                    redis_publisher.log("success", "✅ Stop Loss already active. Skipping restore.")
+                    redis_publisher.log("success", "✅ Stop Loss already active.")
                     return
-                else:
-                    logger.error("Open position found but no Stop Loss active. Skipping restore.")
-                    redis_publisher.send_error("Open position found but no Stop Loss active. Skipping restore.")
-                    return
+                
+                # --- RESTORATION LOGIC ---
+                logger.warning("⚠️ Position active but Stop Loss MISSING! Attempting restoration...")
+                redis_publisher.log("warning", "⚠️ Position active but Stop Loss MISSING! Restoring...")
+                
+                target_stop = self.execution.stop_price
+                
+                # If we don't know the stop price (e.g. restart), recalculate it
+                if not target_stop or target_stop <= 0:
+                    try:
+                        current_atr = df.iloc[-1]['ATR_14']
+                        current_close = df.iloc[-1]['close']
+                        
+                        if current_atr > 0:
+                            calculated_stop = current_close - (current_atr * self.execution.atr_multiplier)
+                            target_stop = round(calculated_stop, 2)
+                            logger.warning(f"Stop price unknown. Recalculated using ATR: ${target_stop}")
+                            redis_publisher.log("warning", f"Stop price unknown. Recalculated: ${target_stop}")
+                        else:
+                             logger.error("Stop price unknown and Invalid ATR. Cannot restore stop.")
+                             redis_publisher.log("error", "Stop price unknown and Invalid ATR. Cannot restore stop.")
+                             return
+                    except Exception as e:
+                        logger.error(f"Error calculating fallback stop: {e}")
+                        return
+
+                # Restore the stop order
+                self.execution.restore_stop_order(target_stop)
             else:
                 logger.info("✅ No open positions. Skipping restore.")
                 redis_publisher.log("success", "✅ No open positions. Skipping restore.")
                 return
         except Exception as e:
             logger.error(f"Error in pre-market routine: {e}")
-            redis_publisher.send_error(f"Pre-market routine error: {str(e)}")
+            redis_publisher.log("error", f"Pre-market routine error: {str(e)}")
     
     def on_new_candle(self):
         """
@@ -304,7 +368,7 @@ class TradingBot:
             df = self.data_handler.update_data(max_retries=10, retry_delay=0.2)
             if df is None or df.empty:
                 logger.error("Data update error")
-                redis_publisher.send_error("Candle data update error")
+                redis_publisher.log("error", "Candle data update error")
                 return
             
             # 2. Calculate indicators (incremental)
@@ -333,7 +397,7 @@ class TradingBot:
             
         except Exception as e:
             logger.error(f"Error in on_new_candle: {e}")
-            redis_publisher.send_error(f"Candle processing error: {str(e)}")
+            redis_publisher.log("error", f"Candle processing error: {str(e)}")
     
     async def run(self):
         """Main async loop."""
@@ -341,7 +405,7 @@ class TradingBot:
         redis_publisher.log("success", "🚀 Trading Bot started")
         
         if not await self.initialize_components():
-            redis_publisher.send_error("Initialization failed - bot stopped")
+            redis_publisher.log("error", "Initialization failed - bot stopped")
             return
                 
         # Define target times (New York Time)
@@ -361,7 +425,7 @@ class TradingBot:
                         await self.connector.connect()
                     except Exception as e:
                         logger.error(f"Reconnect failed: {e}")
-                        redis_publisher.send_error(f"Reconnect failed: {e}")
+                        redis_publisher.log("error", f"Reconnect failed: {e}")
                         continue
                 
                 # 1. Get current NY time
@@ -406,7 +470,7 @@ class TradingBot:
                 redis_publisher.log("warning", "Bot interrupted by keyboard")
             except Exception as e:
                 logger.error(f"Error in loop: {e}")
-                redis_publisher.send_error(f"Error in main loop: {str(e)}")
+                redis_publisher.log("error", f"Error in main loop: {str(e)}")
                 await asyncio.sleep(5)
     
     def shutdown(self):

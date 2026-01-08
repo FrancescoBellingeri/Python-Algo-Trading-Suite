@@ -60,7 +60,7 @@ class DatabaseHandler:
             redis_publisher.log("success", "PostgreSQL DB connection established and tables verified.")
         except Exception as e:
             logger.error(f"DB connection error: {e}")
-            redis_publisher.send_error(f"DB connection error: {e}")
+            redis_publisher.log("error", f"DB connection error: {e}")
             raise e
         
         self.Session = sessionmaker(bind=self.engine)
@@ -100,7 +100,7 @@ class DatabaseHandler:
         except Exception as e:
             session.rollback()
             logger.error(f"DB save error: {e}")
-            redis_publisher.send_error(f"DB save error: {e}")
+            redis_publisher.log("error", f"DB save error: {e}")
             return False
         finally:
             session.close()
@@ -135,7 +135,7 @@ class DatabaseHandler:
             return df.sort_values('date').reset_index(drop=True)
         except Exception as e:
             logger.error(f"DB read error: {e}")
-            redis_publisher.send_error(f"DB read error: {e}")
+            redis_publisher.log("error", f"DB read error: {e}")
             return pd.DataFrame()
     
     # ==================== Trade Management Methods ====================
@@ -194,7 +194,7 @@ class DatabaseHandler:
         except Exception as e:
             session.rollback()
             logger.error(f"Error saving trade: {e}")
-            redis_publisher.send_error(f"Error saving trade: {e}")
+            redis_publisher.log("error", f"Error saving trade: {e}")
             return None
         finally:
             session.close()

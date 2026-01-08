@@ -85,7 +85,7 @@ class IndicatorCalculator:
             
         except Exception as e:
             logger.error(f"Error calculating indicators: {e}")
-            redis_publisher.send_error(f"Indicator calculation error: {str(e)}")
+            redis_publisher.log("error", f"Indicator calculation error: {str(e)}")
             redis_publisher.publish("indicators-calculation", {
                 "status": "error",
                 "error": str(e)

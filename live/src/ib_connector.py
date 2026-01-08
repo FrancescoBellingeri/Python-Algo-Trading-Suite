@@ -53,7 +53,7 @@ class IBConnector:
             logger.error(f"Connection error: {e}")
             
             # Send error to dashboard
-            redis_publisher.send_error(f"IB connection failed: {str(e)}", error_code=500)
+            redis_publisher.log("error", f"IB connection failed: {str(e)}")
             redis_publisher.log("error", f"❌ IB connection error: {str(e)}")
             
             return False
@@ -76,13 +76,13 @@ class IBConnector:
                 
             except Exception as e:
                 logger.error(f"Error during disconnection: {e}")
-                redis_publisher.send_error(f"Disconnection error: {str(e)}")
+                redis_publisher.log("error", f"Disconnection error: {str(e)}")
     
     def is_connected(self):
         """Checks if connected and sends update."""
         if not self.ib.client or not self.ib.isConnected():
             self.connected = False
-            redis_publisher.send_error("IB connection lost unexpectedly")
+            redis_publisher.log("error", "IB connection lost unexpectedly")
             return False
         return True
     
@@ -117,7 +117,6 @@ class IBConnector:
             # Handler for IB errors
             def on_error(reqId, errorCode, errorString, contract):
                 if errorCode < 2000:  # Critical errors
-                    redis_publisher.send_error(f"IB Error {errorCode}: {errorString}", error_code=errorCode)
                     redis_publisher.log("error", f"IB Error {errorCode}: {errorString}")
                 elif errorCode not in [2104, 2106, 2107, 2108]:  # Ignore market data farm messages
                     redis_publisher.log("warning", f"IB Warning {errorCode}: {errorString}")
