@@ -30,9 +30,9 @@ def get_streak_stats(pnl_series):
 
 df = pd.read_csv('./data/QQQ_5min.csv')
 df['date'] = pd.to_datetime(df['date'], utc=True).dt.tz_convert('America/New_York')
-# df = df[df['date'].dt.year >= 2022].reset_index(drop=True)
+df = df[df['date'].dt.year > 2015].reset_index(drop=True)
 
-trading_results = pd.read_csv('output/trades_log.csv')
+trading_results = pd.read_csv('output/trades_log_2025.csv')
 trading_results['entry_date'] = pd.to_datetime(trading_results['entry_date'], utc=True).dt.tz_convert('America/New_York')
 trading_results['exit_date'] = pd.to_datetime(trading_results['exit_date'], utc=True).dt.tz_convert('America/New_York')
 #trading_results = trading_results[trading_results['entry_date'].dt.year >= 2017].reset_index(drop=True)

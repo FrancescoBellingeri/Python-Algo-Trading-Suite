@@ -138,11 +138,11 @@ STARTING_CAPITAL = 10000
 
 df = pd.read_csv('data/qqq_5min.csv')
 df['date'] = pd.to_datetime(df['date'], utc=True).dt.tz_convert('America/New_York')
-# df = df[df['date'].dt.year >= 2025].reset_index(drop=True)
+df = df[df['date'].dt.year > 2015].reset_index(drop=True)
 
 # Execute backtest
 trades_df = run_backtest(df, STARTING_CAPITAL, risk_per_trade_pct=0.02, atr_multiplier=10, max_risk_dollars=30000)
 trades_df['exit_date'] = pd.to_datetime(trades_df['exit_date'], utc=True).dt.tz_convert('America/New_York')
 
-trades_df.to_csv('output/trades_log.csv', index=False)
-print(f"\n✅ Saved {len(trades_df)} trades to 'output/trades_log.csv'")
+trades_df.to_csv('output/trades_log_2025.csv', index=False)
+print(f"\n✅ Saved {len(trades_df)} trades to 'output/trades_log_2015.csv'")
