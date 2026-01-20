@@ -16,11 +16,11 @@ class TradingBot:
     
     def __init__(self):
         """Initialize the trading bot."""
-        self.connector = Connector()
-        self.data_handler = DataHandler(self.connector)
-        self.indicator_calculator = IndicatorCalculator()
-        self.execution = ExecutionHandler()
         self.db = DatabaseHandler()
+        self.connector = Connector()
+        self.data_handler = DataHandler(self.connector, self.db)
+        self.indicator_calculator = IndicatorCalculator(self.db)
+        self.execution = ExecutionHandler(self.db)
         
         # Bot state
         self.is_running = True
@@ -242,7 +242,7 @@ class TradingBot:
             df = self.indicator_calculator.calculate_incremental(df)
             
             # 3. Check signals
-            if not self.in_position:
+            if not self.execution.has_position():
                 signal = self.execution.check_entry_signals(df)
                 if signal:
                     self.in_position = True

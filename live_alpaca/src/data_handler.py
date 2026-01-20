@@ -12,16 +12,17 @@ import pytz
 class DataHandler:
     """Handles market data download and update."""
     
-    def __init__(self, connector):
+    def __init__(self, connector, db_handler):
         """
         Initializes DataHandler.
         
         Args:
             connector: Already connected Connector instance
+            db_handler: Shared DatabaseHandler instance
         """
         self.connector = connector
         self.ib = self.connector.ib
-        self.db = DatabaseHandler()
+        self.db = db_handler
         self.symbol = SYMBOL
         self.contract = Stock(SYMBOL, EXCHANGE, CURRENCY)
         

@@ -8,9 +8,9 @@ from config import SYMBOL
 class IndicatorCalculator:
     """Calculates technical indicators for trading strategy."""
     
-    def __init__(self):
+    def __init__(self, db_handler):
         """Initializes indicator calculator."""
-        self.db = DatabaseHandler()
+        self.db = db_handler
         self.symbol = SYMBOL
 
         # Indicator parameters

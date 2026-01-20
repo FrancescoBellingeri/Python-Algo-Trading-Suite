@@ -11,14 +11,14 @@ from config import SYMBOL, MAX_RISK_PER_TRADE, ATR_MULTIPLIER, ALPACA_API_KEY, A
 class ExecutionHandler:
     """Handles order execution based on Daily Range and HMM prediction."""
     
-    def __init__(self):
+    def __init__(self, db_handler):
         """
         Initializes ExecutionHandler.
         
         Args:
-            capital: Capital for size calculation (default 25k)
+            db_handler: Shared DatabaseHandler instance
         """
-        self.db = DatabaseHandler()
+        self.db = db_handler
         self.trading_client = TradingClient(ALPACA_API_KEY, ALPACA_SECRET_KEY, paper=True)
         self.capital = None
         
@@ -98,9 +98,11 @@ class ExecutionHandler:
                     redis_publisher.log("warning", "⚠️ Position size = 0, trade cancelled")
                     return False
 
-            # Place order
-            return self.open_long_position(shares, entry_price, trailing_stop_price)
-
+                # Place order
+                return self.open_long_position(shares, entry_price, trailing_stop_price)
+        
+            return False
+            
         except Exception as e:
             redis_publisher.log("error", f"❌ Error in check_entry_signals: {str(e)}")
             return False
@@ -244,6 +246,9 @@ class ExecutionHandler:
             if stop_order.status == 'filled':
                 exit_price = float(stop_order.filled_avg_price) if stop_order.filled_avg_price else self.stop_price
                 exit_time = stop_order.filled_at or datetime.now(ZoneInfo("America/New_York"))
+
+                if not self.capital:
+                    self.capital = float(self.trading_client.get_account().cash)
                 
                 # Calculate P&L
                 if self.entry_price:
@@ -327,6 +332,13 @@ class ExecutionHandler:
         for position in positions:
             if position.symbol == SYMBOL and position.qty != 0:
                 return True
+
+        self.current_position = None
+        self.current_stop_order = None
+        self.entry_price = None
+        self.entry_time = None
+        self.stop_price = None
+        self.position_size = 0
         
         return False
         
