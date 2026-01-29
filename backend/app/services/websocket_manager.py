@@ -109,7 +109,7 @@ class ConnectionManager:
                     self.current_state["active_position"] = payload
         
         elif message_type == "log":
-            # Add log and keep only the last 50
+            # Add log and keep last 2000 (buffer for the day)
             self.current_state["logs"].append(payload)
-            if len(self.current_state["logs"]) > 50:
+            if len(self.current_state["logs"]) > 2000:
                 self.current_state["logs"].pop(0)

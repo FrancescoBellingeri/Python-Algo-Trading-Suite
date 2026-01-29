@@ -128,6 +128,7 @@ class ExecutionHandler:
         if last_candle['WILLR_10'] > -20 and last_candle['close'] < last_candle['SMA_200']:
             self.trading_client.close_all_positions(cancel_orders=True)
             redis_publisher.log("info", "Position closed")
+            self.reset_state()
             return True
 
         return False
@@ -275,12 +276,7 @@ class ExecutionHandler:
                 )
                 
                 # Reset internal state
-                self.current_position = None
-                self.current_stop_order = None
-                self.entry_price = None
-                self.entry_time = None
-                self.stop_price = None
-                self.position_size = 0
+                self.reset_state()
                 
                 # Notify dashboard
                 self.broadcast_position_update()
@@ -326,21 +322,26 @@ class ExecutionHandler:
             return False
         
     def has_position(self):
-        """Checks if we have an open position."""
-        positions = self.trading_client.get_all_positions()
-        
-        for position in positions:
-            if position.symbol == SYMBOL and position.qty != 0:
-                return True
+        """Checks if we have an open position at the broker."""
+        try:
+            positions = self.trading_client.get_all_positions()
+            for position in positions:
+                if position.symbol == SYMBOL and float(position.qty) != 0:
+                    return True
+            return False
+        except Exception as e:
+            redis_publisher.log("error", f"Error in has_position: {e}")
+            return False
 
+    def reset_state(self):
+        """Resets the internal tracking state of the execution handler."""
         self.current_position = None
         self.current_stop_order = None
         self.entry_price = None
         self.entry_time = None
         self.stop_price = None
         self.position_size = 0
-        
-        return False
+        redis_publisher.log("debug", "Execution state reset")
         
     def broadcast_position_update(self, current_ema_value=0.0):
         """

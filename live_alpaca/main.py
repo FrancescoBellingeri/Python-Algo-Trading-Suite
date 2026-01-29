@@ -241,21 +241,32 @@ class TradingBot:
             # 2. Calculate indicators (incremental)
             df = self.indicator_calculator.calculate_incremental(df)
             
-            # 3. Check signals
-            if not self.execution.has_position():
+            # 3. Handle position state and signals
+            if not self.in_position:
+                # Look for entry signals
                 signal = self.execution.check_entry_signals(df)
                 if signal:
                     self.in_position = True
             else:
-                # First check if stop loss was triggered
+                # We are in position, check what happened
+                # A) First check if stop loss was triggered (detects fill of stop order)
                 if self.execution.check_stop_loss_triggered():
                     redis_publisher.log("info", "🔄 Position closed by stop loss")
                     self.in_position = False
+                
+                # B) Then check for strategy exit signals
                 elif self.execution.check_exit_signals(df):
                     redis_publisher.log("info", "🔄 Position closed by exit signal")
                     self.in_position = False
+                
+                # C) Fallback: Check if position was closed externally (manual/other)
+                elif not self.execution.has_position():
+                    redis_publisher.log("warning", "⚠️ Position closed externally or manually")
+                    self.execution.reset_state()
+                    self.in_position = False
+                
+                # D) If still open, update trailing stop
                 else:
-                    # Position still open - update trailing stop
                     self.execution.update_trailing_stop(df)
 
             self.connector._send_account_info()

@@ -113,12 +113,15 @@ export function useWebSocket(url = DEFAULT_WS_URL) {
         break;
 
       case "log":
+        if (payload.timestamp && typeof payload.timestamp === "string" && payload.timestamp.includes("T")) {
+          payload.timestamp = new Date(payload.timestamp).toLocaleTimeString();
+        }
+
         logs.value.push({
           ...payload,
-          id: Date.now() + Math.random(), // ID univoco per v-for key
+          id: Date.now() + Math.random(),
           timestamp: payload.timestamp || new Date().toLocaleTimeString(),
         });
-        if (logs.value.length > 50) logs.value.shift();
         break;
     }
   }
