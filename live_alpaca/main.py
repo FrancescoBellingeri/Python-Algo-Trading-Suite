@@ -310,13 +310,8 @@ class TradingBot:
                         self.pre_market_routine()
                         await asyncio.sleep(2)
 
-                    # B) EOD Routine (16:00)
-                    elif now.hour == 16 and now.minute == 0:
-                        redis_publisher.log("info", "🌙 EOD bot is sleeping")
-                        await asyncio.sleep(2)
-
-                    # C) 5 Minute Candles (9:35 -> 15:55, every 5 min)
-                    elif (time(9, 35) <= now.time() <= time(15, 55)):
+                    # B) 5 Minute Candles (9:35 -> 16:00, every 5 min)
+                    elif (time(9, 35) <= now.time() <= time(16, 00)):
                         # Check 5 minute modulo (0, 5, 10, ...)
                         if now.minute % 5 == 0:
                             self.on_new_candle()
@@ -330,6 +325,9 @@ class TradingBot:
                                         self.execution.broadcast_position_update(current_ema_value=current_sma)
                                 except Exception as e:
                                     redis_publisher.log("error", f"Error broadcasting position update: {e}")
+                            
+                            if now.hour == 16 and now.minute == 0:
+                                redis_publisher.log("info", "🌙 EOD bot is sleeping")
                             
                             await asyncio.sleep(2)
 
