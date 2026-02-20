@@ -1,10 +1,10 @@
 import pandas as pd
+import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest, StopLossRequest, ReplaceOrderRequest, StopOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
-from src.database import DatabaseHandler
 from src.redis_publisher import redis_publisher
 from config import SYMBOL, MAX_RISK_PER_TRADE, ATR_MULTIPLIER, ALPACA_API_KEY, ALPACA_SECRET_KEY
 
@@ -126,11 +126,17 @@ class ExecutionHandler:
         
         last_candle = df.iloc[-1]
         if last_candle['WILLR_10'] > -20 and last_candle['close'] < last_candle['SMA_200']:
-            exit_price = float(last_candle['close'])
-            exit_time = datetime.now(ZoneInfo("America/New_York"))
-
             self.trading_client.close_all_positions(cancel_orders=True)
-            redis_publisher.log("info", "Position closed by strategy signal")
+            redis_publisher.log("info", "Position closed by strategy signal — fetching real fill price...")
+
+            # Fetch real exit price from Alpaca (most recent filled SELL)
+            exit_price, exit_time = self.fetch_last_closed_trade_price()
+
+            # Fallback to candle close if Alpaca doesn't return fill in time
+            if not exit_price:
+                redis_publisher.log("warning", "⚠️ Could not fetch real fill price — using candle close as fallback")
+                exit_price = float(last_candle['close'])
+                exit_time = datetime.now(ZoneInfo("America/New_York"))
 
             # Calculate P&L
             if self.entry_price and self.position_size:
@@ -142,12 +148,12 @@ class ExecutionHandler:
                 pnl = 0.0
                 pnl_percent = 0.0
 
-            redis_publisher.log("info", f"📊 STRATEGY EXIT @ ${exit_price:.2f} - P&L: ${pnl:.2f} ({pnl_percent:.2f}%)")
+            redis_publisher.log("info", f"📊 STRATEGY EXIT @ ${exit_price:.2f} (real fill) - P&L: ${pnl:.2f} ({pnl_percent:.2f}%)")
 
-            # Save trade to database
+            # Save trade to database with real Alpaca prices
             self.db.save_trade(
                 symbol=SYMBOL,
-                entry_price=float(self.entry_price or exit_price),
+                entry_price=float(self.entry_price),
                 exit_price=float(exit_price),
                 quantity=int(self.position_size),
                 entry_time=self.entry_time,
@@ -163,15 +169,47 @@ class ExecutionHandler:
 
         return False
     
+    def wait_for_order_fill(self, order_id, timeout=30):
+        """
+        Polls Alpaca until the order is filled or timeout expires.
+
+        Args:
+            order_id: UUID of the order to poll
+            timeout: Max seconds to wait (default 30)
+
+        Returns:
+            tuple: (filled_avg_price: float, filled_at: datetime) or (None, None)
+        """
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                order = self.trading_client.get_order_by_id(order_id)
+                status = str(order.status).lower()
+                if status in ("filled", "orderstatus.filled"):
+                    fill_price = float(order.filled_avg_price) if order.filled_avg_price else None
+                    fill_time = order.filled_at or datetime.now(ZoneInfo("America/New_York"))
+                    return fill_price, fill_time
+                elif status in ("canceled", "expired", "rejected"):
+                    redis_publisher.log("warning", f"Order {order_id} ended with status: {status}")
+                    return None, None
+            except Exception as e:
+                redis_publisher.log("warning", f"Polling order {order_id}: {e}")
+            time.sleep(1)
+
+        redis_publisher.log("warning", f"Timeout waiting for order {order_id} to fill")
+        return None, None
+
     def open_long_position(self, shares, entry_price, stop_price, attempt=1):
         """
         Opens a long position using a BRACKET ORDER (Parent + Child).
+        After submission, polls Alpaca for the real filled_avg_price.
         """
         if attempt > 3:
             redis_publisher.log("error", "❌ Max retries reached. Order aborted.")
             return False
 
         try:
+            # Store estimated values as fallback
             self.entry_price = float(entry_price)
             self.stop_price = float(stop_price)
             self.position_size = int(shares)
@@ -192,10 +230,18 @@ class ExecutionHandler:
                 order_data=market_order_data
             )
 
-            all_orders = self.trading_client.get_orders()
-            self.current_stop_order = next((o for o in all_orders if o.symbol == SYMBOL and o.type == "stop"), None)
+            # Poll for real fill price from Alpaca
+            fill_price, fill_time = self.wait_for_order_fill(self.current_position.id, timeout=30)
+            if fill_price:
+                self.entry_price = fill_price
+                self.entry_time = fill_time
+                redis_publisher.log("success", f"✅ POSITION OPENED: {shares} shares @ ${self.entry_price:.2f} (real fill)")
+            else:
+                redis_publisher.log("warning", f"⚠️ Could not confirm fill — using estimated entry ${self.entry_price:.2f}")
 
-            redis_publisher.log("success", f"✅ POSITION OPENED: {shares} shares @ approx ${self.entry_price:.2f}")
+            all_orders = self.trading_client.get_orders()
+            self.current_stop_order = next((o for o in all_orders if o.symbol == SYMBOL and str(o.type).lower() in ("stop", "ordertype.stop")), None)
+
             self.broadcast_position_update()
             return True
 
