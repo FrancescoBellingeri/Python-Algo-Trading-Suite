@@ -262,6 +262,34 @@ class TradingBot:
                 # C) Fallback: Check if position was closed externally (manual/other)
                 elif not self.execution.has_position():
                     redis_publisher.log("warning", "⚠️ Position closed externally or manually")
+
+                    # Try to fetch real exit price from Alpaca
+                    exit_price, exit_time = self.execution.fetch_last_closed_trade_price()
+
+                    if exit_price and self.execution.entry_price and self.execution.position_size:
+                        try:
+                            capital = self.execution.capital or float(self.execution.trading_client.get_account().cash)
+                            pnl = (exit_price - self.execution.entry_price) * self.execution.position_size
+                            pnl_percent = (pnl / capital) * 100 if capital else 0.0
+                        except Exception:
+                            pnl, pnl_percent = 0.0, 0.0
+
+                        redis_publisher.log("warning", f"📋 MANUAL CLOSE @ ${exit_price:.2f} - P&L: ${pnl:.2f} ({pnl_percent:.2f}%)")
+
+                        self.db.save_trade(
+                            symbol=SYMBOL,
+                            entry_price=float(self.execution.entry_price),
+                            exit_price=float(exit_price),
+                            quantity=int(self.execution.position_size),
+                            entry_time=self.execution.entry_time,
+                            exit_time=exit_time,
+                            pnl_dollar=float(pnl),
+                            pnl_percent=float(pnl_percent),
+                            exit_reason="MANUAL"
+                        )
+                    else:
+                        redis_publisher.log("warning", "⚠️ Could not retrieve exit price for manual closure — trade NOT saved to DB.")
+
                     self.execution.reset_state()
                     self.in_position = False
                 

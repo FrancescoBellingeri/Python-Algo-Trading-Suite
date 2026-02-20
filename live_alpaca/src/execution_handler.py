@@ -126,9 +126,39 @@ class ExecutionHandler:
         
         last_candle = df.iloc[-1]
         if last_candle['WILLR_10'] > -20 and last_candle['close'] < last_candle['SMA_200']:
+            exit_price = float(last_candle['close'])
+            exit_time = datetime.now(ZoneInfo("America/New_York"))
+
             self.trading_client.close_all_positions(cancel_orders=True)
-            redis_publisher.log("info", "Position closed")
+            redis_publisher.log("info", "Position closed by strategy signal")
+
+            # Calculate P&L
+            if self.entry_price and self.position_size:
+                if not self.capital:
+                    self.capital = float(self.trading_client.get_account().cash)
+                pnl = (exit_price - self.entry_price) * self.position_size
+                pnl_percent = (pnl / self.capital) * 100 if self.capital else 0.0
+            else:
+                pnl = 0.0
+                pnl_percent = 0.0
+
+            redis_publisher.log("info", f"📊 STRATEGY EXIT @ ${exit_price:.2f} - P&L: ${pnl:.2f} ({pnl_percent:.2f}%)")
+
+            # Save trade to database
+            self.db.save_trade(
+                symbol=SYMBOL,
+                entry_price=float(self.entry_price or exit_price),
+                exit_price=float(exit_price),
+                quantity=int(self.position_size),
+                entry_time=self.entry_time,
+                exit_time=exit_time,
+                pnl_dollar=float(pnl),
+                pnl_percent=float(pnl_percent),
+                exit_reason="STRATEGY_EXIT"
+            )
+
             self.reset_state()
+            self.broadcast_position_update()
             return True
 
         return False
@@ -288,6 +318,49 @@ class ExecutionHandler:
         except Exception as e:
             redis_publisher.log("error", f"Error checking stop loss: {str(e)}")
             return False
+
+    def fetch_last_closed_trade_price(self):
+        """
+        Retrieves the fill price of the most recent closing order for SYMBOL from Alpaca.
+        Used when a position is detected as closed externally/manually.
+
+        Returns:
+            tuple: (exit_price: float, exit_time: datetime) or (None, None) if not found
+        """
+        try:
+            # Get recent closed/filled orders
+            from alpaca.trading.requests import GetOrdersRequest
+            from alpaca.trading.enums import QueryOrderStatus
+
+            request_params = GetOrdersRequest(
+                status=QueryOrderStatus.CLOSED,
+                symbols=[SYMBOL],
+                limit=10
+            )
+            orders = self.trading_client.get_orders(filter=request_params)
+
+            # Find the most recent filled SELL order
+            sell_orders = [
+                o for o in orders
+                if str(o.side).lower() in ("sell", "orderside.sell")
+                and str(o.status).lower() in ("filled", "orderstatus.filled")
+                and o.filled_avg_price is not None
+            ]
+
+            if sell_orders:
+                # Most recent first
+                sell_orders.sort(key=lambda o: o.filled_at or datetime.min.replace(tzinfo=None), reverse=True)
+                latest = sell_orders[0]
+                exit_price = float(latest.filled_avg_price)
+                exit_time = latest.filled_at or datetime.now(ZoneInfo("America/New_York"))
+                redis_publisher.log("info", f"🔎 Retrieved last closed sell order: ${exit_price:.2f} @ {exit_time}")
+                return exit_price, exit_time
+
+            redis_publisher.log("warning", "No recent filled SELL order found for manual closure price.")
+            return None, None
+        except Exception as e:
+            redis_publisher.log("error", f"Error fetching last closed trade price: {e}")
+            return None, None
 
     def restore_stop_loss(self):
         """Restores the stop loss order."""
