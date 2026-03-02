@@ -4,31 +4,32 @@ import numpy as np
 from datetime import time
 
 def ibkr_commission(shares):
-    total_fees = shares * 0.005
+    total_fees = shares * 0
     return total_fees
 
-def calculate_position_size(entry_price, stop_loss, account_size, risk_per_trade_pct, max_risk_dollars, leverage=4):
+def calculate_position_size(entry_price, stop_loss, account_size, risk_per_trade_pct, leverage=2):
     """
-    Calculate the number of contracts (or shares) to buy, taking into account:
-    - risk per trade as a percentage,
-    - leverage,
-    - maximum allowed absolute loss in dollars.
+    Calculate position size aligning with live execution logic (execution_handler.py).
+    Matches Alpaca cash-based sizing with 0.95 buffer and leverage.
     """
+    # 1. Risk-based sizing
+    risk_dollars = account_size * risk_per_trade_pct * 0.95
+    risk_per_share = abs(entry_price - stop_loss)
+    
+    if risk_per_share < 0.01:
+        return 0, 0
+    
+    shares_by_risk = int(risk_dollars / risk_per_share)
+    
+    # 2. Buying power sizing (with leverage)
+    usable_bp = account_size * leverage * 0.95
+    shares_by_bp = int(usable_bp / entry_price)
+    
+    final_shares = min(shares_by_risk, shares_by_bp)
+    
+    return final_shares, risk_per_share * final_shares
 
-    # Risk per contract
-    R = abs(entry_price - stop_loss)
-    if R == 0 or R < 0.01:  # minimal symbolic risk to avoid division by zero
-        return 0
-
-    risk_dollars = account_size * risk_per_trade_pct
-    allowed_risk = min(risk_dollars, max_risk_dollars)
-    risk_based_size = allowed_risk / R
-    leverage_based_size = (account_size * leverage) / entry_price
-    position_size = int(min(risk_based_size, leverage_based_size))
-
-    return position_size, R * position_size
-
-def run_backtest(df, investment, risk_per_trade_pct, atr_multiplier, max_risk_dollars):
+def run_backtest(df, investment, risk_per_trade_pct, atr_multiplier, leverage=2):
     equity = investment
     trades = []
     
@@ -112,8 +113,7 @@ def run_backtest(df, investment, risk_per_trade_pct, atr_multiplier, max_risk_do
                         stop_loss=trailing_stop_price,
                         account_size=equity,
                         risk_per_trade_pct=risk_per_trade_pct,
-                        max_risk_dollars=max_risk_dollars,
-                        leverage=4
+                        leverage=leverage
                     )
 
                     if no_of_shares > 0:
@@ -128,20 +128,21 @@ def run_backtest(df, investment, risk_per_trade_pct, atr_multiplier, max_risk_do
     if in_position:
         equity += (no_of_shares * df['close'].iloc[i])
 
+    # ... (rest of the print lines unchanged)
     earning = round(equity - investment, 2)
     roi = round(earning / investment * 100, 2)
 
     print(f'EARNING: ${earning} ; ROI: {roi}%')
     return pd.DataFrame(trades)
    
-STARTING_CAPITAL = 10000
+STARTING_CAPITAL = 20000
 
-df = pd.read_csv('data/qqq_5min.csv')
+df = pd.read_csv('data/QQQ_5min.csv')
 df['date'] = pd.to_datetime(df['date'], utc=True).dt.tz_convert('America/New_York')
-df = df[df['date'].dt.year > 2015].reset_index(drop=True)
+#df = df[df['date'].dt.year > 2015].reset_index(drop=True)
 
 # Execute backtest
-trades_df = run_backtest(df, STARTING_CAPITAL, risk_per_trade_pct=0.02, atr_multiplier=10, max_risk_dollars=30000)
+trades_df = run_backtest(df, STARTING_CAPITAL, risk_per_trade_pct=0.02, atr_multiplier=10, leverage=2)
 trades_df['exit_date'] = pd.to_datetime(trades_df['exit_date'], utc=True).dt.tz_convert('America/New_York')
 
 trades_df.to_csv('output/trades_log_2025.csv', index=False)

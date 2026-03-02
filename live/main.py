@@ -268,7 +268,7 @@ class TradingBot:
 
                     if exit_price and self.execution.entry_price and self.execution.position_size:
                         try:
-                            capital = self.execution.capital or float(self.execution.trading_client.get_account().cash)
+                            capital = self.execution.capital or float(self.execution.trading_client.get_account().equity)
                             pnl = (exit_price - self.execution.entry_price) * self.execution.position_size
                             pnl_percent = (pnl / capital) * 100 if capital else 0.0
                         except Exception:

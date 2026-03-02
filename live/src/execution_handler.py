@@ -38,12 +38,13 @@ class ExecutionHandler:
         redis_publisher.log("info", f"💰 ExecutionHandler initialized")
     
     def calculate_position_size(self, entry_price, stop_loss):
-        # 1. Fetch available funds
+        # 1. Fetch account details
         account = self.trading_client.get_account()
-        self.capital = float(account.cash)
+        self.capital = float(account.equity)      # Use Equity for risk management
+        buying_power = float(account.buying_power) # Use Buying Power for sizing limit
 
         if self.capital <= 0:
-            redis_publisher.log("error", "❌ Sizing failed: Available funds is 0 or negative.")
+            redis_publisher.log("error", "❌ Sizing failed: Account equity is 0 or negative.")
             return 0
 
         # 2. Risk Management Calculation
@@ -57,10 +58,14 @@ class ExecutionHandler:
         # Size based on Risk
         shares = int(risk_dollars / risk_per_share)
 
-        usable_bp = float(account.cash) * 0.95  # buffer Alpaca
+        # 3. Buying Power Constraint (Alpaca provides 1:2 or 1:4 leveraged BP)
+        usable_bp = buying_power * 0.95
         shares_by_bp = int(usable_bp / entry_price)
         
-        return min(shares, shares_by_bp)
+        final_shares = min(shares, shares_by_bp)
+        
+        redis_publisher.log("info", f"Sizing logic: Risk allows {shares}, Buying Power allows {shares_by_bp}. Result: {final_shares}")
+        return final_shares
     
     def check_entry_signals(self, df):
         """
@@ -141,7 +146,7 @@ class ExecutionHandler:
             # Calculate P&L
             if self.entry_price and self.position_size:
                 if not self.capital:
-                    self.capital = float(self.trading_client.get_account().cash)
+                    self.capital = float(self.trading_client.get_account().equity)
                 pnl = (exit_price - self.entry_price) * self.position_size
                 pnl_percent = (pnl / self.capital) * 100 if self.capital else 0.0
             else:
@@ -325,7 +330,7 @@ class ExecutionHandler:
                 exit_time = stop_order.filled_at or datetime.now(ZoneInfo("America/New_York"))
 
                 if not self.capital:
-                    self.capital = float(self.trading_client.get_account().cash)
+                    self.capital = float(self.trading_client.get_account().equity)
                 
                 # Calculate P&L
                 if self.entry_price:
