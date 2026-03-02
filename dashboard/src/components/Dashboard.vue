@@ -188,20 +188,24 @@
                   <th class="px-4 py-3">Symbol</th>
                   <th class="px-4 py-3">Date</th>
                   <th class="px-4 py-3 text-right">Qty</th>
+                  <th class="px-4 py-3 text-right">Entry</th>
+                  <th class="px-4 py-3 text-right">Exit</th>
                   <th class="px-4 py-3 text-right">PnL $</th>
-                  <th class="px-4 py-3 text-center">Exit</th>
+                  <th class="px-4 py-3 text-center">Reason</th>
                 </tr>
               </thead>
               <tbody class="divide-y divide-[#2A3350]">
                 <tr v-for="trade in tradeHistory" :key="trade.id" class="hover:bg-[#1A1F35] transition-colors">
                   <td class="px-4 py-3 font-medium text-white">{{ trade.symbol }}</td>
-                  <td class="px-4 py-3">{{ formatDate(trade.exit_time) }}</td>
+                  <td class="px-4 py-3 text-xs whitespace-nowrap">{{ formatDate(trade.exit_time) }}</td>
                   <td class="px-4 py-3 text-right">{{ trade.quantity }}</td>
+                  <td class="px-4 py-3 text-right font-mono text-xs text-gray-300">${{ trade.entry_price.toFixed(2) }}</td>
+                  <td class="px-4 py-3 text-right font-mono text-xs text-gray-300">${{ trade.exit_price.toFixed(2) }}</td>
                   <td :class="['px-4 py-3 text-right font-bold', getPnlColor(trade.pnl_dollar)]">
                     ${{ trade.pnl_dollar.toFixed(2) }}
                   </td>
                   <td class="px-4 py-3 text-center">
-                    <span class="px-2 py-1 rounded text-[10px] font-bold bg-gray-700 text-gray-300">
+                    <span class="px-2 py-0.5 rounded text-[9px] font-bold bg-gray-700/50 text-gray-400 border border-gray-600/30 whitespace-nowrap">
                       {{ trade.exit_reason }}
                     </span>
                   </td>
