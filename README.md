@@ -1,10 +1,20 @@
-# Python Algo-Trading Suite 🚀
+# Python Algo Trading Framework 🚀 
+## Backtesting, Live Execution (IBKR + Alpaca) & Risk Management
 
 ![Python](https://img.shields.io/badge/Python-3.13%2B-blue)
 ![License](https://img.shields.io/badge/License-MIT-green)
 ![Status](https://img.shields.io/badge/Status-Active-success)
 
-**An algorithmic trading framework designed for the Nasdaq-100 (QQQ). It features a custom event-driven backtester, volatility-adjusted risk management, and live execution capabilities via Interactive Brokers API.**
+**A high-performance algorithmic trading suite optimized for the Nasdaq-100 (QQQ). This framework features a custom event-driven backtester, volatility-adjusted risk management, and a hybrid live execution engine leveraging Interactive Brokers for high-speed data and Alpaca for seamless order management.**
+
+---
+
+### Key Features ⚡
+- **Event-Driven Backtester:** Accurate simulation with commissions and tiered pricing.
+- **Hybrid Execution:** High-speed data from **Interactive Brokers (IBKR)** + modern execution via **Alpaca API**.
+- **Dynamic Risk Management:** ATR-based volatility sizing and fixed fractional risk (2% per trade).
+- **Real-time Dashboard:** Built with **FastAPI** and **Vue 3** for live P&L and position monitoring.
+- **PostgreSQL Integration:** Full trade history and performance logging.
 
 ---
 
@@ -268,3 +278,8 @@ The dashboard will be available at `http://localhost:5174`
 1. **Check TWS Connection:** The bot should log "Connected to Interactive Brokers" if TWS is running.
 2. **Check Backend:** Visit `http://localhost:8002/docs` to see the FastAPI Swagger documentation.
 3. **Check Dashboard:** Open `http://localhost:5174` to see real-time positions and P&L updates.
+
+## Try it now
+1. Fork this repo
+2. Follow setup instructions
+3. Start backtesting or paper trading
