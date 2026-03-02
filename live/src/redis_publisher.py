@@ -1,11 +1,10 @@
 import redis
 import json
-import logging
+# Removed standard logging import to use shared loguru logger
 from datetime import datetime
 from typing import Any, Dict, Optional, List
 import config
-
-logger = logging.getLogger(__name__)
+from src.logger import logger  # Import shared Loguru logger
 
 class RedisPublisher:
     """Handles message publishing from bot to WebSocket server"""
@@ -35,7 +34,7 @@ class RedisPublisher:
             
             # Test connection
             self.client.ping()
-            logger.info(f"✅ Connected to Redis at {config.REDIS_HOST}:{config.REDIS_PORT}")
+            logger.success(f"✅ Connected to Redis at {config.REDIS_HOST}:{config.REDIS_PORT}")
             
             # Setup command listener
             self._setup_command_listener()
@@ -77,10 +76,29 @@ class RedisPublisher:
             return False
     
     def log(self, level: str, message: str, details: Optional[Dict] = None):
-        """Sends log message to server"""
+        """
+        Sends log message to server AND logs to local logger.
+        Now allows writing a single line of code to do both.
+        """
+        # 1. Log locally (mapped to Loguru levels)
+        try:
+            if level.lower() == "success":
+                logger.success(message)
+            elif level.lower() == "error":
+                logger.error(message)
+            elif level.lower() == "warning":
+                logger.warning(message)
+            elif level.lower() == "debug":
+                logger.debug(message)
+            else:
+                logger.info(message)
+        except Exception:
+            logger.info(message)
+
         if not config.SEND_LOGS:
             return
             
+        # 2. Publish to Redis
         log_entry = {
             "level": level,
             "message": message,
@@ -90,16 +108,25 @@ class RedisPublisher:
         self.publish("log", log_entry)
     
     def send_account_update(self, account_values: Dict[str, Any]):
-        """Sends account update from IB account values"""
-        # Extract important values
+        """Sends account update handling both IB and Alpaca formats"""
+        # Extract important values using both IB and Alpaca keys
         account_data = {
-            "net_liquidation": float(account_values.get('NetLiquidation', 0)),
-            "buying_power": float(account_values.get('BuyingPower', 0)),
-            "total_cash": float(account_values.get('TotalCashValue', 0)),
+            # Net Liquidation / Equity
+            "net_liquidation": float(account_values.get('NetLiquidation', account_values.get('equity', 0))),
+            
+            # Buying Power
+            "buying_power": float(account_values.get('BuyingPower', account_values.get('buying_power', 0))),
+            
+            # Cash
+            "total_cash": float(account_values.get('TotalCashValue', account_values.get('cash', 0))),
+            
+            # P&L (Alpaca doesn't give these in account directly usually, but we check anyway)
             "daily_pnl": float(account_values.get('DailyPnL', 0)),
             "unrealized_pnl": float(account_values.get('UnrealizedPnL', 0)),
             "realized_pnl": float(account_values.get('RealizedPnL', 0)),
-            "gross_position_value": float(account_values.get('GrossPositionValue', 0)),
+            
+            # Gross Position / Market Value
+            "gross_position_value": float(account_values.get('GrossPositionValue', account_values.get('long_market_value', 0))),
         }
         
         self.publish("account_update", account_data)
@@ -116,20 +143,20 @@ class RedisPublisher:
         formatted_positions = []
         for pos in positions:
             # 1. Normalize Quantity (shares vs position)
-            quantity = pos.get("shares", pos.get("position", 0))
+            quantity = float(pos.get("shares", pos.get("position", 0)))
             
             # 2. Normalize Entry Price (entry_price vs avgCost)
-            entry_price = pos.get("entry_price", pos.get("avgCost", 0))
+            entry_price = float(pos.get("entry_price", pos.get("avgCost", 0)))
             
             # 3. Normalize Market Price (current_price vs marketPrice)
-            market_price = pos.get("current_price", pos.get("marketPrice", 0))
+            market_price = float(pos.get("current_price", pos.get("marketPrice", 0)))
             
             # 4. Normalize Market Value
-            market_value = pos.get("market_value", pos.get("marketValue", 0))
+            market_value = float(pos.get("market_value", pos.get("marketValue", 0)))
             
             # 5. Normalize PnL
-            unrealized_pnl = pos.get("unrealized_pnl", pos.get("unrealizedPNL", 0))
-            realized_pnl = pos.get("realized_pnl", pos.get("realizedPNL", 0))
+            unrealized_pnl = float(pos.get("unrealized_pnl", pos.get("unrealizedPNL", 0)))
+            realized_pnl = float(pos.get("realized_pnl", pos.get("realizedPNL", 0)))
 
             formatted_pos = {
                 "symbol": pos.get("symbol", ""),
@@ -144,34 +171,14 @@ class RedisPublisher:
                 "realized_pnl": realized_pnl,
                 
                 # Pass-through extra fields required by Dashboard
-                "current_stop": pos.get("current_stop"),
-                "current_trailing_stop": pos.get("current_trailing_stop"),
-                "current_sma_value": pos.get("current_sma_value"),
+                "current_stop": float(pos.get("current_stop")) if pos.get("current_stop") else None,
+                "current_trailing_stop": float(pos.get("current_trailing_stop")) if pos.get("current_trailing_stop") else None,
+                "current_sma_value": float(pos.get("current_sma_value")) if pos.get("current_sma_value") else None,
                 "timestamp": pos.get("timestamp", datetime.now().isoformat())
             }
             formatted_positions.append(formatted_pos)
         
         self.publish("position_update", formatted_positions)
-        
-    def send_order_update(self, order: Dict[str, Any]):
-        """Sends order update"""
-        if not config.SEND_ORDERS:
-            return
-            
-        order_data = {
-            "order_id": order.get("orderId"),
-            "symbol": order.get("symbol", config.SYMBOL),
-            "action": order.get("action"),
-            "quantity": order.get("totalQuantity"),
-            "order_type": order.get("orderType"),
-            "limit_price": order.get("lmtPrice"),
-            "status": order.get("status"),
-            "filled": order.get("filled", 0),
-            "remaining": order.get("remaining", 0),
-            "avg_fill_price": order.get("avgFillPrice"),
-            "last_fill_time": order.get("lastFillTime"),
-        }
-        self.publish("order_update", order_data)
         
     def send_pnl_update(self, daily_pnl: float, unrealized_pnl: float, realized_pnl: float):
         """Sends P&L update"""

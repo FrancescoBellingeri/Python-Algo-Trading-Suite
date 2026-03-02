@@ -1,29 +1,26 @@
 import pandas as pd
-import os
+import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from ib_insync import Stock, MarketOrder, StopOrder
-from src.logger import logger
-from src.database import DatabaseHandler
+from alpaca.trading.client import TradingClient
+from alpaca.trading.requests import MarketOrderRequest, StopLossRequest, ReplaceOrderRequest, StopOrderRequest
+from alpaca.trading.enums import OrderSide, TimeInForce
 from src.redis_publisher import redis_publisher
-from config import SYMBOL, EXCHANGE, CURRENCY, MAX_RISK_PER_TRADE, ATR_MULTIPLIER
+from config import SYMBOL, MAX_RISK_PER_TRADE, ATR_MULTIPLIER, ALPACA_API_KEY, ALPACA_SECRET_KEY
 
 class ExecutionHandler:
     """Handles order execution based on Daily Range and HMM prediction."""
     
-    def __init__(self, ib_connector, capital=25000):
+    def __init__(self, db_handler):
         """
         Initializes ExecutionHandler.
         
         Args:
-            ib_connector: Active IB connection
-            capital: Capital for size calculation (default 25k)
+            db_handler: Shared DatabaseHandler instance
         """
-        self.ib = ib_connector.ib
-        self.db = DatabaseHandler()
-        self.contract = Stock(SYMBOL, EXCHANGE, CURRENCY)
-        self.capital = capital
-        self.base_risk = MAX_RISK_PER_TRADE
+        self.db = db_handler
+        self.trading_client = TradingClient(ALPACA_API_KEY, ALPACA_SECRET_KEY, paper=True)
+        self.capital = None
         
         # Tracking
         self.current_position = None
@@ -35,98 +32,35 @@ class ExecutionHandler:
 
         self.broadcast_position_update()
 
-        self.atr_multiplier = ATR_MULTIPLIER
         self.last_available_funds = 0.0
         
         # Send initial info to dashboard
-        logger.info(f"ExecutionHandler initialized - Capital: ${capital:,.0f}")
-        redis_publisher.log("info", f"💰 ExecutionHandler initialized - Capital: ${capital:,.0f}")
-        
-        # Subscription to account data (necessary to populate accountSummary)
-        self.ib.reqAccountSummary()
-
-    def get_available_margin(self):
-        """
-        Retrieves available funds with a retry mechanism and fallback.
-        """
-        # 0. Helper to find value in a list of IBKR objects
-        target_tags = ['AvailableFunds', 'TotalCashValue', 'NetLiquidation', 'BuyingPower', 'CashBalance']
-        
-        def find_value_in_list(items):
-            for item in items:
-                if item.tag in target_tags:
-                    # Check currency (allow base currency or bot currency)
-                    if item.currency == CURRENCY or item.currency == 'BASE' or item.currency == '':
-                        try:
-                            val = float(item.value)
-                            if val > 0: return val
-                        except ValueError:
-                            continue
-            return None
-
-        # 1. Quick Check (Cache/Live)
-        val = find_value_in_list(self.ib.accountValues())
-        if val: 
-            self.last_available_funds = val
-            return val
-
-        val = find_value_in_list(self.ib.accountSummary())
-        if val:
-            self.last_available_funds = val
-            return val
-
-        # 2. If 0, Force Wait (The "Kickstart")
-        logger.warning("⚠️ Funds appear to be 0. Waiting for data sync (Max 3s)...")
-        
-        # We try 15 times x 0.2s = 3 seconds max wait
-        for i in range(15):
-            self.ib.sleep(0.2) # CRITICAL: ib.sleep allows incoming network messages to be processed
-            
-            # Re-check Summary
-            val = find_value_in_list(self.ib.accountSummary())
-            if val:
-                logger.info(f"✅ Data received after {i*0.2:.1f}s: ${val:,.2f}")
-                self.last_available_funds = val
-                return val
-        
-        # 3. DEBUG: If still failing, print what tags WE DO HAVE to the log
-        logger.error("❌ TIMEOUT: Could not fetch margin data from IBKR.")
-        logger.info("--- DUMPING AVAILABLE TAGS ---")
-        found_tags = [f"{x.tag}={x.value} ({x.currency})" for x in self.ib.accountSummary()]
-        logger.info(str(found_tags[:10])) # Print first 10 tags
-        
-        # 4. Fallback (The "Show Must Go On" Fix)
-        # If we can't read the balance, we use the self.capital (25k) setting 
-        # so the bot doesn't freeze.
-        if self.capital > 0:
-            logger.warning(f"⚠️ Using fallback capital: ${self.capital:,.2f}")
-            return self.capital
-            
-        return 0.0
+        redis_publisher.log("info", f"💰 ExecutionHandler initialized")
     
     def calculate_position_size(self, entry_price, stop_loss):
         # 1. Fetch available funds
-        available_funds = self.get_available_margin()
+        account = self.trading_client.get_account()
+        self.capital = float(account.cash)
 
-        if available_funds <= 0:
-            logger.error("❌ Sizing failed: Available funds is 0 or negative.")
+        if self.capital <= 0:
+            redis_publisher.log("error", "❌ Sizing failed: Available funds is 0 or negative.")
             return 0
 
         # 2. Risk Management Calculation
-        risk_dollars = self.capital * self.base_risk
+        risk_dollars = self.capital * MAX_RISK_PER_TRADE * 0.95
         risk_per_share = abs(entry_price - stop_loss)
         
         if risk_per_share < 0.01: 
-            logger.warning("❌ Sizing failed: Risk per share too small (Stop too close to Entry).")
+            redis_publisher.log("warning", "❌ Sizing failed: Risk per share too small (Stop too close to Entry).")
             return 0
         
         # Size based on Risk
-        risk_based_size = int(risk_dollars / risk_per_share)
-        margin_based_size = int((available_funds * 0.95) / entry_price)
-        
-        final_size = min(risk_based_size, margin_based_size)
+        shares = int(risk_dollars / risk_per_share)
 
-        return final_size
+        usable_bp = float(account.cash) * 0.95  # buffer Alpaca
+        shares_by_bp = int(usable_bp / entry_price)
+        
+        return min(shares, shares_by_bp)
     
     def check_entry_signals(self, df):
         """
@@ -138,46 +72,40 @@ class ExecutionHandler:
         Returns:
             bool: True if order was placed
         """
+        try:
+            if self.has_position():
+                return False
         
-        if self.has_position():
+            last_candle = df.iloc[-1]
+            if last_candle['WILLR_10'] < -80 and last_candle['close'] > last_candle['SMA_200']:
+                entry_price = float(last_candle['close'])
+                atr_value = float(last_candle['ATR_14'])
+
+                if atr_value <= 0:
+                    redis_publisher.log("error", "Invalid ATR (< 0), impossible to execute trade")
+                    return False
+                
+                risk_per_share = atr_value * ATR_MULTIPLIER
+                # Set initial stop loss
+                trailing_stop_price = round(entry_price - risk_per_share, 2)
+            
+                shares = self.calculate_position_size(
+                        entry_price=entry_price,
+                        stop_loss=trailing_stop_price
+                    )
+            
+                if shares <= 0:
+                    redis_publisher.log("warning", "⚠️ Position size = 0, trade cancelled")
+                    return False
+
+                # Place order
+                return self.open_long_position(shares, entry_price, trailing_stop_price)
+        
             return False
-        
-        last_candle = df.iloc[-1]
-        if last_candle['WILLR_10'] < -80 and last_candle['close'] > last_candle['SMA_200']:
-            entry_price = last_candle['close']
             
-            atr_value = last_candle['ATR_14']
-
-            if atr_value <= 0:
-                logger.error("ATR < 0, impossible to execute trade")
-                redis_publisher.log("error", "Invalid ATR, trade cancelled")
-                return False
-            
-            risk_per_share = atr_value * self.atr_multiplier
-            # Set initial stop loss
-            trailing_stop_price = round(entry_price - risk_per_share, 2)
-        
-            shares = self.calculate_position_size(
-                    entry_price=entry_price,
-                    stop_loss=trailing_stop_price
-                )
-        
-            if shares <= 0:
-                logger.warning("Position size = 0, no trade")
-                redis_publisher.log("warning", "⚠️ Position size = 0, trade cancelled")
-                return False
-
-            shares_validated = self.validate_order_size(self.contract, shares)
-
-            if shares_validated <= 0:
-                logger.warning("❌ Order cancelled after margin check (Size 0).")
-                redis_publisher.log("warning", "❌ Order cancelled after margin check (Size 0).")
-                return False
-
-            # Place order
-            return self.open_long_position(shares_validated, trailing_stop_price)
-
-        return False
+        except Exception as e:
+            redis_publisher.log("error", f"❌ Error in check_entry_signals: {str(e)}")
+            return False
     
     def check_exit_signals(self, df):
         """
@@ -190,107 +118,135 @@ class ExecutionHandler:
             bool: True if trade was closed 
         """
 
-        logger.info("Checking exit signals...")
         redis_publisher.log("info", "Checking exit signals...")
         
         if not self.has_position():
-            logger.warning("No open positions")
+            redis_publisher.log("warning", "No open positions")
             return False
         
         last_candle = df.iloc[-1]
         if last_candle['WILLR_10'] > -20 and last_candle['close'] < last_candle['SMA_200']:
-            return self.close_position()
+            self.trading_client.close_all_positions(cancel_orders=True)
+            redis_publisher.log("info", "Position closed by strategy signal — fetching real fill price...")
+
+            # Fetch real exit price from Alpaca (most recent filled SELL)
+            exit_price, exit_time = self.fetch_last_closed_trade_price()
+
+            # Fallback to candle close if Alpaca doesn't return fill in time
+            if not exit_price:
+                redis_publisher.log("warning", "⚠️ Could not fetch real fill price — using candle close as fallback")
+                exit_price = float(last_candle['close'])
+                exit_time = datetime.now(ZoneInfo("America/New_York"))
+
+            # Calculate P&L
+            if self.entry_price and self.position_size:
+                if not self.capital:
+                    self.capital = float(self.trading_client.get_account().cash)
+                pnl = (exit_price - self.entry_price) * self.position_size
+                pnl_percent = (pnl / self.capital) * 100 if self.capital else 0.0
+            else:
+                pnl = 0.0
+                pnl_percent = 0.0
+
+            redis_publisher.log("info", f"📊 STRATEGY EXIT @ ${exit_price:.2f} (real fill) - P&L: ${pnl:.2f} ({pnl_percent:.2f}%)")
+
+            # Save trade to database with real Alpaca prices
+            self.db.save_trade(
+                symbol=SYMBOL,
+                entry_price=float(self.entry_price),
+                exit_price=float(exit_price),
+                quantity=int(self.position_size),
+                entry_time=self.entry_time,
+                exit_time=exit_time,
+                pnl_dollar=float(pnl),
+                pnl_percent=float(pnl_percent),
+                exit_reason="STRATEGY_EXIT"
+            )
+
+            self.reset_state()
+            self.broadcast_position_update()
+            return True
 
         return False
     
-    def open_long_position(self, shares, stop_price, attempt=1):
+    def wait_for_order_fill(self, order_id, timeout=30):
+        """
+        Polls Alpaca until the order is filled or timeout expires.
+
+        Args:
+            order_id: UUID of the order to poll
+            timeout: Max seconds to wait (default 30)
+
+        Returns:
+            tuple: (filled_avg_price: float, filled_at: datetime) or (None, None)
+        """
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                order = self.trading_client.get_order_by_id(order_id)
+                status = str(order.status).lower()
+                if status in ("filled", "orderstatus.filled"):
+                    fill_price = float(order.filled_avg_price) if order.filled_avg_price else None
+                    fill_time = order.filled_at or datetime.now(ZoneInfo("America/New_York"))
+                    return fill_price, fill_time
+                elif status in ("canceled", "expired", "rejected"):
+                    redis_publisher.log("warning", f"Order {order_id} ended with status: {status}")
+                    return None, None
+            except Exception as e:
+                redis_publisher.log("warning", f"Polling order {order_id}: {e}")
+            time.sleep(1)
+
+        redis_publisher.log("warning", f"Timeout waiting for order {order_id} to fill")
+        return None, None
+
+    def open_long_position(self, shares, entry_price, stop_price, attempt=1):
         """
         Opens a long position using a BRACKET ORDER (Parent + Child).
+        After submission, polls Alpaca for the real filled_avg_price.
         """
         if attempt > 3:
-            logger.error("❌ Max retries reached. Order aborted.")
-            redis_publisher.log("error", "Max retries reached. Order aborted.")
+            redis_publisher.log("error", "❌ Max retries reached. Order aborted.")
             return False
 
         try:
-            self.ib.qualifyContracts(self.contract)
-            logger.info(f"📈 Sending Bracket Order: Buy {shares} @ MKT, Stop @ {stop_price}")
+            # Store estimated values as fallback
+            self.entry_price = float(entry_price)
+            self.stop_price = float(stop_price)
+            self.position_size = int(shares)
+            self.entry_time = datetime.now(ZoneInfo("America/New_York"))
+
             redis_publisher.log("info", f"📈 Sending order: BUY {shares} shares @ MARKET, Stop Loss @ ${stop_price:.2f}")
 
-            # 1. Parent Order (Entry)
-            parent = MarketOrder('BUY', shares)
-            parent.transmit = False # <--- DO NOT SEND YET!
-            parent.tif = 'GTC'
-            
-            # 2. Child Order (Stop Loss)
-            stop_loss = StopOrder('SELL', shares, stop_price)
-            stop_loss.outsideRth = False
-            stop_loss.tif = 'GTC'
-            
-            stop_loss.transmit = True # <--- This will send the whole package
-            parent_trade = self.ib.placeOrder(self.contract, parent)
-            stop_loss.parentId = parent_trade.order.orderId
-            stop_trade = self.ib.placeOrder(self.contract, stop_loss)
-            
-            logger.info(f"Orders sent. Parent ID: {parent.orderId}, Stop ParentId: {stop_loss.parentId}")
-            redis_publisher.log("info", f"📤 Orders sent - Parent ID: {parent.orderId}")
+            market_order_data = MarketOrderRequest(
+                symbol=SYMBOL,
+                qty=shares,
+                side=OrderSide.BUY,
+                time_in_force=TimeInForce.GTC,
+                order_class="oto",
+                stop_loss=StopLossRequest(stop_price=stop_price)
+            )
 
-            # 5. Wait for parent FILL confirmation
-            self.ib.sleep(1)
-            
-            status = parent_trade.orderStatus.status
-            
-            if status in ['Filled', 'PreSubmitted', 'Submitted']:
-                if status == 'Filled':
-                    self.entry_price = parent_trade.orderStatus.avgFillPrice
-                else:
-                    # --- ROBUST PRICE RECOVERY ---
-                    # Request market data if not present
-                    ticker = self.ib.reqMktData(self.contract, '', False, False)
-                    self.ib.sleep(0.5) # Technical time to receive snapshot
-                    
-                    if ticker and ticker.marketPrice() == ticker.marketPrice(): # Check if NOT NaN
-                        self.entry_price = ticker.marketPrice()
-                    else:
-                        # Final fallback: estimated price to avoid breaking tracking
-                        self.entry_price = stop_price + (stop_price * 0.01)
-                        logger.warning(f"Ticker not available, using fallback price: {self.entry_price}")
-                        redis_publisher.log("warning", f"Ticker not available, using fallback price: {self.entry_price}")
+            self.current_position = self.trading_client.submit_order(
+                order_data=market_order_data
+            )
 
-                self.entry_time = datetime.now()
-                self.position_size = shares
-                self.current_stop_order = stop_loss
-                self.stop_price = stop_price
-                self.current_position = parent_trade
-                
-                logger.info(f"✅ Position Tracked. Size: {shares} @ approx ${self.entry_price:.2f}")
-                redis_publisher.log("success", f"✅ POSITION OPENED: {shares} shares")
-                self.broadcast_position_update()
-                return True
-            elif status in ['Inactive', 'Cancelled', 'PendingCancel']:
-                # Failure (Likely Margin error or other)
-                reason = parent_trade.log[-1].message if parent_trade.log else "Unknown reason"
-                logger.warning(f"⚠️ Order Rejected: {status}. Reason: {reason}")
-                redis_publisher.log("warning", f"⚠️ Order Rejected: {status}. Reason: {reason}")
-                
-                # --- RETRY LOGIC ---
-                # Reduce the size by 10% and retry
-                new_shares = int(shares * 0.90)
-                if new_shares < 1:
-                    return False
-                
-                logger.info(f"🔄 Retrying with reduced size: {new_shares} shares...")
-                redis_publisher.log("warning", f"🔄 Retry {attempt}/3: Reducing size to {new_shares}")
-                
-                return self.open_long_position(new_shares, stop_price, attempt + 1)
-
+            # Poll for real fill price from Alpaca
+            fill_price, fill_time = self.wait_for_order_fill(self.current_position.id, timeout=30)
+            if fill_price:
+                self.entry_price = fill_price
+                self.entry_time = fill_time
+                redis_publisher.log("success", f"✅ POSITION OPENED: {shares} shares @ ${self.entry_price:.2f} (real fill)")
             else:
-                # Stati transitori, consideriamo inviato
-                return True
+                redis_publisher.log("warning", f"⚠️ Could not confirm fill — using estimated entry ${self.entry_price:.2f}")
+
+            all_orders = self.trading_client.get_orders()
+            self.current_stop_order = next((o for o in all_orders if o.symbol == SYMBOL and str(o.type).lower() in ("stop", "ordertype.stop")), None)
+
+            self.broadcast_position_update()
+            return True
 
         except Exception as e:
-            logger.error(f"Bracket Order Error: {e}")
-            redis_publisher.log("error", f"Position opening error: {str(e)}")
+            redis_publisher.log("error", f"Error opening position: {str(e)}")
             return False
 
     def update_trailing_stop(self, df):
@@ -305,111 +261,42 @@ class ExecutionHandler:
         """
         try:
             if not self.has_position():
-                logger.warning("No open position")
+                redis_publisher.log("warning", "No open position")
                 return False
             
             last_candle = df.iloc[-1]
             atr_value = last_candle['ATR_14']
 
             if atr_value <= 0:
-                logger.error("ATR < 0, impossible to update stop loss")
                 redis_publisher.log("error", "ATR < 0, impossible to update stop loss")
                 return False
             
-            risk_per_share = atr_value * self.atr_multiplier
+            risk_per_share = atr_value * ATR_MULTIPLIER
             # Set initial stop loss
             new_stop_price = round(last_candle['close'] - risk_per_share, 2)
             
-            if new_stop_price <= self.stop_price:
-                logger.info(f"New stop ${new_stop_price:.2f} not better than current ${self.stop_price:.2f}")
-                redis_publisher.log("success", f"New stop ${new_stop_price:.2f} not better than current ${self.stop_price:.2f}")
+            if not self.current_stop_order:
+                redis_publisher.log("warning", "Stop order missing in state. Attempting to restore...")
+                if not self.restore_stop_loss():
+                    return False
+
+            current_stop_val = float(self.current_stop_order.stop_price)
+
+            if new_stop_price <= current_stop_val:
+                redis_publisher.log("success", f"New stop ${new_stop_price:.2f} not better than current ${current_stop_val:.2f}")
                 return False
             
-            self.current_stop_order.auxPrice = new_stop_price
-        
-            # Re-applying the order updates the existing one
-            trade = self.ib.placeOrder(self.contract, self.current_stop_order)
+            replace_data = ReplaceOrderRequest(stop_price=new_stop_price)
+            self.current_stop_order = self.trading_client.replace_order_by_id(self.current_stop_order.id, replace_data)
             
-            # Update references
-            old_stop = self.stop_price
-            self.stop_price = new_stop_price
-            
-            logger.info(f"📈 Stop Loss updated: ${old_stop:.2f} → ${new_stop_price:.2f}")
-            redis_publisher.log("success", f"📈 TRAILING STOP: ${old_stop:.2f} → ${new_stop_price:.2f} (+${new_stop_price - old_stop:.2f})")
+            redis_publisher.log("success", f"📈 TRAILING STOP: ${current_stop_val:.2f} → ${new_stop_price:.2f} (+${new_stop_price - current_stop_val:.2f})")
             
             return True
             
         except Exception as e:
-            logger.error(f"Error updating stop loss: {e}")
             redis_publisher.log("error", f"Stop update error: {str(e)}")
             return False
         
-    def close_position(self):
-        """Closes current position at market."""
-        try:
-            if not self.has_position():
-                logger.warning("No position to close")
-                return False
-            
-            # CANCEL EXISTING STOP ORDER IF EXISTS
-            if self.current_stop_order:
-                try:
-                    logger.info(f"Cancelling orphan stop order {self.current_stop_order.orderId} before closing...")
-                    self.ib.cancelOrder(self.current_stop_order)
-                    self.ib.sleep(0.5)
-                except Exception as e:
-                    logger.warning(f"Could not cancel stop order: {e}")
-
-            # Place closing market order
-            close_order = MarketOrder('SELL', self.position_size)
-            trade = self.ib.placeOrder(self.contract, close_order)
-            
-            # Wait for execution
-            self.ib.sleep(1)
-            
-            if trade.orderStatus.status == 'Filled':
-                exit_price = trade.orderStatus.avgFillPrice
-                pnl = (exit_price - self.entry_price) * self.position_size
-                
-                logger.info(f"✅ Position closed @ ${exit_price:.2f}")
-                logger.info(f"💰 P&L: ${pnl:.2f} ({pnl/self.capital*100:.2f}%)")
-
-                # Send trade result to dashboard
-                redis_publisher.log("success", f"✅ POSITION CLOSED @ ${exit_price:.2f} - P&L: ${pnl:.2f})")
-
-                self.db.save_trade(
-                    symbol=SYMBOL,
-                    entry_price=self.entry_price,
-                    exit_price=exit_price,
-                    quantity=self.position_size,
-                    entry_time=self.entry_time,
-                    exit_time=datetime.now(),
-                    pnl_dollar=pnl,
-                    pnl_percent=pnl/self.capital*100,
-                    exit_reason="EMA_CROSS"
-                )
-                
-                # Reset tracking
-                self.current_position = None
-                self.current_stop_order = None
-                self.entry_price = None
-                self.stop_price = None
-                self.position_size = 0
-
-                self.broadcast_position_update()
-                
-                return True
-            
-            logger.error(f"Closure failed: {trade.orderStatus.status}")
-            redis_publisher.log("error", f"Position closure failed: {trade.orderStatus.status}")
-
-            return False
-            
-        except Exception as e:
-            logger.error(f"Error closing position: {e}")
-            redis_publisher.log("error", f"Closure error: {str(e)}")
-            return False
-    
     def check_stop_loss_triggered(self):
         """
         Checks if the stop loss order was triggered/filled.
@@ -423,31 +310,22 @@ class ExecutionHandler:
             if not self.position_size or self.position_size <= 0:
                 return False
             
-            # Check actual IB position
-            actual_position = 0
-            for pos in self.ib.positions():
-                if pos.contract.symbol == SYMBOL:
-                    actual_position = pos.position
-                    break
-            
-            # If IB shows no position but we think we have one, stop was triggered
-            if actual_position == 0 and self.position_size > 0:
-                logger.info("🔍 Detected position closed - checking stop order status...")
-                
-                # Try to get fill details from the stop order
-                exit_price = self.stop_price  # Default to stop price
-                exit_time = datetime.now(ZoneInfo("America/New_York"))
-                
-                # Look for the filled stop order to get exact exit price
-                if self.current_stop_order:
-                    for trade in self.ib.trades():
-                        if trade.order.orderId == self.current_stop_order.orderId:
-                            if trade.orderStatus.status == 'Filled':
-                                exit_price = trade.orderStatus.avgFillPrice
-                                if trade.fills:
-                                    exit_time = trade.fills[-1].time
-                                logger.info(f"📋 Stop order filled @ ${exit_price:.2f}")
-                            break
+            # Check if we have a tracked stop order
+            if not self.current_stop_order:
+                return False
+
+            # Get latest status of the stop order
+            try:
+                stop_order = self.trading_client.get_order_by_id(self.current_stop_order.id)
+            except Exception:
+                return False
+
+            if stop_order.status == 'filled':
+                exit_price = float(stop_order.filled_avg_price) if stop_order.filled_avg_price else self.stop_price
+                exit_time = stop_order.filled_at or datetime.now(ZoneInfo("America/New_York"))
+
+                if not self.capital:
+                    self.capital = float(self.trading_client.get_account().cash)
                 
                 # Calculate P&L
                 if self.entry_price:
@@ -458,11 +336,9 @@ class ExecutionHandler:
                     pnl_percent = 0.0
                 
                 # Log the trade closure
-                logger.info(f"🛑 STOP LOSS TRIGGERED @ ${exit_price:.2f}")
-                logger.info(f"💰 P&L: ${pnl:.2f} ({pnl_percent:.2f}%)")
-                redis_publisher.log("warning", f"🛑 STOP LOSS TRIGGERED @ ${exit_price:.2f} - P&L: ${pnl:.2f}")
+                redis_publisher.log("warning", f"🛑 STOP LOSS TRIGGERED @ ${exit_price:.2f} - P&L: ${pnl:.2f} ({pnl_percent:.2f}%)")
                 
-                # Save trade to database (convert numpy types to native Python)
+                # Save trade to database
                 self.db.save_trade(
                     symbol=SYMBOL,
                     entry_price=float(self.entry_price or exit_price),
@@ -476,12 +352,7 @@ class ExecutionHandler:
                 )
                 
                 # Reset internal state
-                self.current_position = None
-                self.current_stop_order = None
-                self.entry_price = None
-                self.entry_time = None
-                self.stop_price = None
-                self.position_size = 0
+                self.reset_state()
                 
                 # Notify dashboard
                 self.broadcast_position_update()
@@ -491,90 +362,105 @@ class ExecutionHandler:
             return False
             
         except Exception as e:
-            logger.error(f"Error checking stop loss: {e}")
+            redis_publisher.log("error", f"Error checking stop loss: {str(e)}")
             return False
-        
-    def restore_stop_order(self, stop_price):
+
+    def fetch_last_closed_trade_price(self):
         """
-        Restores a missing Stop Loss order.
+        Retrieves the fill price of the most recent closing order for SYMBOL from Alpaca.
+        Used when a position is detected as closed externally/manually.
+
+        Returns:
+            tuple: (exit_price: float, exit_time: datetime) or (None, None) if not found
         """
         try:
-            if not self.has_position():
-                logger.warning("Cannot restore stop: No position open")
-                return False
-            
-            logger.info(f"🛡️ Restoring Stop Loss @ ${stop_price:.2f}...")
-            redis_publisher.log("info", f"🛡️ Restoring Stop Loss @ ${stop_price:.2f}...")
-            
-            # Create NEW Stop Order (GTC)
-            restored_stop = StopOrder('SELL', self.position_size, stop_price)
-            restored_stop.tif = 'GTC'
-            restored_stop.outsideRth = False
-            
-            # Place it
-            trade = self.ib.placeOrder(self.contract, restored_stop)
-            self.ib.sleep(0.5)
-            
-            if trade.orderStatus.status in ['PreSubmitted', 'Submitted', 'Filled']:
-                self.current_stop_order = trade.order
-                self.stop_price = stop_price
-                logger.info(f"✅ Stop Loss restored successfully. ID: {trade.order.orderId}")
-                redis_publisher.log("success", f"✅ Stop Loss restored @ ${stop_price:.2f}")
-                self.broadcast_position_update()
-                return True
-            else:
-                logger.error(f"❌ Failed to restore stop: {trade.orderStatus.status}")
-                redis_publisher.log("error", f"Failed to restore stop: {trade.orderStatus.status}")
-                return False
-                
+            # Get recent closed/filled orders
+            from alpaca.trading.requests import GetOrdersRequest
+            from alpaca.trading.enums import QueryOrderStatus
+
+            request_params = GetOrdersRequest(
+                status=QueryOrderStatus.CLOSED,
+                symbols=[SYMBOL],
+                limit=10
+            )
+            orders = self.trading_client.get_orders(filter=request_params)
+
+            # Find the most recent filled SELL order
+            sell_orders = [
+                o for o in orders
+                if str(o.side).lower() in ("sell", "orderside.sell")
+                and str(o.status).lower() in ("filled", "orderstatus.filled")
+                and o.filled_avg_price is not None
+            ]
+
+            if sell_orders:
+                # Most recent first
+                sell_orders.sort(key=lambda o: o.filled_at or datetime.min.replace(tzinfo=None), reverse=True)
+                latest = sell_orders[0]
+                exit_price = float(latest.filled_avg_price)
+                exit_time = latest.filled_at or datetime.now(ZoneInfo("America/New_York"))
+                redis_publisher.log("info", f"🔎 Retrieved last closed sell order: ${exit_price:.2f} @ {exit_time}")
+                return exit_price, exit_time
+
+            redis_publisher.log("warning", "No recent filled SELL order found for manual closure price.")
+            return None, None
         except Exception as e:
-            logger.error(f"Error restoring stop: {e}")
-            redis_publisher.log("error", f"Error restoring stop: {e}")
+            redis_publisher.log("error", f"Error fetching last closed trade price: {e}")
+            return None, None
+
+    def restore_stop_loss(self):
+        """Restores the stop loss order."""
+        try:
+            if not self.has_position():
+                redis_publisher.log("warning", "No open position")
+                return False
+            
+            if self.current_stop_order:
+                redis_publisher.log("warning", "Stop loss order already exists")
+                return False
+            
+            df = self.db.get_latest_data(SYMBOL, 10)
+            last_candle = df.iloc[-1]
+            self.stop_price = round(last_candle['close'] - last_candle['ATR_14'] * ATR_MULTIPLIER, 2)
+                    
+            stop_order = StopOrderRequest(
+                symbol=SYMBOL,
+                qty=self.position_size,
+                side=OrderSide.SELL,
+                time_in_force=TimeInForce.GTC,
+                stop_price=self.stop_price
+            )
+            self.current_stop_order = self.trading_client.submit_order(order_data=stop_order)
+            
+            redis_publisher.log("success", f"RESTORED STOP LOSS: ${self.stop_price:.2f}")
+            
+            return True
+            
+        except Exception as e:
+            redis_publisher.log("error", f"Error restoring stop loss: {str(e)}")
             return False
         
     def has_position(self):
-        """Checks if we have an open position."""
-        positions = self.ib.positions()
-        
-        for position in positions:
-            if position.contract.symbol == SYMBOL and position.position != 0:
-                return True
-        
-        return False
-    
-    def update_capital(self):
-        """
-        Updates self.capital retrieving NetLiquidation value from IB account.
-        """
+        """Checks if we have an open position at the broker."""
         try:
-            # Wait for account data to be available
-            self.ib.reqAccountSummary()
-            account_values = self.ib.accountValues()
-            
-            # Search for 'NetLiquidation' value for account base currency (e.g. USD)
-            net_liquidation_value = None
-            for value in account_values:
-                if value.tag == 'NetLiquidation' and value.currency == 'EUR': # Ensure currency is correct
-                    net_liquidation_value = float(value.value)
-                    break
-            
-            if net_liquidation_value is not None:
-                old_capital = self.capital
-                self.capital = net_liquidation_value
-                logger.info(f"Capital updated successfully: ${self.capital:,.2f}")
-                redis_publisher.log("success", f"✅ Capital updated: ${self.capital:,.2f} (change: ${self.capital - old_capital:+,.2f})")
-
-                return True
-            else:
-                logger.error("Unable to find 'NetLiquidation' value in account data.")
-                redis_publisher.log("error", "❌ NetLiquidation not found in account data")
-                redis_publisher.log("error", "Unable to update capital: NetLiquidation not found")
-                return False
-
-        except Exception as e:
-            logger.error(f"Error updating capital: {e}")
-            redis_publisher.log("error", f"Capital update error: {str(e)}")
+            positions = self.trading_client.get_all_positions()
+            for position in positions:
+                if position.symbol == SYMBOL and float(position.qty) != 0:
+                    return True
             return False
+        except Exception as e:
+            redis_publisher.log("error", f"Error in has_position: {e}")
+            return False
+
+    def reset_state(self):
+        """Resets the internal tracking state of the execution handler."""
+        self.current_position = None
+        self.current_stop_order = None
+        self.entry_price = None
+        self.entry_time = None
+        self.stop_price = None
+        self.position_size = 0
+        redis_publisher.log("debug", "Execution state reset")
         
     def broadcast_position_update(self, current_ema_value=0.0):
         """
@@ -587,26 +473,16 @@ class ExecutionHandler:
                 return None
 
             # Get portfolio data for PnL
-            portfolio = self.ib.portfolio()
-            pnl = 0.0
-            market_value = 0.0
-            market_price = 0.0
-            
-            for item in portfolio:
-                if item.contract.symbol == SYMBOL:
-                    pnl = item.marketValue - (item.averageCost * item.position)
-                    market_value = item.marketValue
-                    market_price = item.marketPrice
-                    break
+            position = self.trading_client.get_open_position(SYMBOL)
             
             # Construct position object matching dashboard expectations
             position_data = {
                 "symbol": SYMBOL,
-                "shares": self.position_size,
-                "entry_price": self.entry_price,
-                "current_price": market_price,
-                "market_value": market_value,
-                "unrealized_pnl": pnl,
+                "shares": position.qty,
+                "entry_price": position.avg_entry_price,
+                "current_price": position.current_price,
+                "market_value": position.market_value,
+                "unrealized_pnl": (float(position.current_price) - float(position.avg_entry_price)) * float(position.qty),
                 "current_stop": self.stop_price,
                 "current_trailing_stop": self.stop_price,
                 "current_sma_value": current_ema_value,
@@ -618,42 +494,5 @@ class ExecutionHandler:
             return position_data
 
         except Exception as e:
-            logger.error(f"Error broadcasting position update: {e}")
+            redis_publisher.log("error", f"Error broadcasting position update: {e}")
             return None
-
-    def validate_order_size(self, contract, intended_shares):
-        available_funds = self.get_available_margin()
-        safe_funds = available_funds * 0.95
-        
-        # Use a simpler Market Order for the check
-        check_order = MarketOrder('BUY', intended_shares)
-        
-        try:
-            # whatIfOrder returns an OrderState object
-            order_state = self.ib.whatIfOrder(contract, check_order)
-            
-            # --- THE FIX ---
-            # Extract initMarginChange safely
-            # Sometimes it's on the object directly, sometimes it needs to be cast
-            raw_margin = getattr(order_state, 'initMarginChange', "0")
-            required_margin = float(raw_margin)
-            
-            if required_margin > 1e10: # Check for "Infinity" sentinel value
-                logger.warning("⚠️ Margin requirement returned as Infinity. Proceeding with caution.")
-                return intended_shares 
-
-            logger.info(f"🔎 Margin Check: Required ${required_margin:,.2f} | Available: ${safe_funds:,.2f}")
-
-            if required_margin > safe_funds:
-                reduction_ratio = safe_funds / required_margin
-                new_size = int(intended_shares * reduction_ratio)
-                new_size = max(0, new_size - 1) 
-                logger.warning(f"⚠️ Insufficient Margin. Reducing: {intended_shares} -> {new_size}")
-                return new_size
-            
-            return intended_shares
-
-        except Exception as e:
-            # If whatIf fails, we fallback to our own calculation rather than returning 0
-            logger.error(f"whatIfOrder failed: {e}. Falling back to risk-based size.")
-            return intended_shares

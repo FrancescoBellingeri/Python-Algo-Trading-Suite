@@ -9,10 +9,6 @@ IB_HOST = os.getenv('IB_HOST', 'ib-gateway')
 IB_PORT = int(os.getenv('IB_PORT', '4004'))  # 7497 for TWS, 4001 for IB Gateway
 IB_CLIENT_ID = int(os.getenv('IB_CLIENT_ID', '1'))
 
-# === ALPACA CONNECTION ===
-ALPACA_API_KEY = os.getenv('ALPACA_API_KEY')
-ALPACA_SECRET_KEY = os.getenv('ALPACA_SECRET_KEY')
-
 # === DATABASE CONFIGURATION ===
 DB_USER = os.getenv('DB_USER')
 DB_PASSWORD = os.getenv('DB_PASSWORD')

@@ -4,7 +4,6 @@ from sqlalchemy import create_engine, Column, String, Float, Integer
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy.dialects.postgresql import TIMESTAMP
 from config import ACTIVE_DB_URL
-from src.logger import logger
 from src.redis_publisher import redis_publisher
 
 Base = declarative_base()
@@ -56,10 +55,8 @@ class DatabaseHandler:
         # Automatically create tables if they don't exist
         try:
             Base.metadata.create_all(self.engine)
-            logger.info("PostgreSQL DB connection established and tables verified.")
             redis_publisher.log("success", "PostgreSQL DB connection established and tables verified.")
         except Exception as e:
-            logger.error(f"DB connection error: {e}")
             redis_publisher.log("error", f"DB connection error: {e}")
             raise e
         
@@ -99,7 +96,6 @@ class DatabaseHandler:
             return True
         except Exception as e:
             session.rollback()
-            logger.error(f"DB save error: {e}")
             redis_publisher.log("error", f"DB save error: {e}")
             return False
         finally:
@@ -134,7 +130,6 @@ class DatabaseHandler:
                 
             return df.sort_values('date').reset_index(drop=True)
         except Exception as e:
-            logger.error(f"DB read error: {e}")
             redis_publisher.log("error", f"DB read error: {e}")
             return pd.DataFrame()
     
@@ -188,12 +183,10 @@ class DatabaseHandler:
             session.commit()
             session.refresh(trade)
             
-            logger.info(f"Trade saved successfully: ID {trade.id}")
             redis_publisher.log("success", f"✅ Trade saved to database: ID {trade.id}")
             return trade.id
         except Exception as e:
             session.rollback()
-            logger.error(f"Error saving trade: {e}")
             redis_publisher.log("error", f"Error saving trade: {e}")
             return None
         finally:
@@ -242,7 +235,7 @@ class DatabaseHandler:
             
             return result
         except Exception as e:
-            logger.error(f"Error retrieving trades: {e}")
+            redis_publisher.log("error", f"Error retrieving trades: {e}")
             return []
         finally:
             session.close()
@@ -318,7 +311,7 @@ class DatabaseHandler:
                 'max_drawdown_percent': round(max_dd_pct, 2)
             }
         except Exception as e:
-            logger.error(f"Error calculating stats: {e}")
+            redis_publisher.log("error", f"Error calculating stats: {e}")
             return None
         finally:
             session.close()
@@ -334,7 +327,7 @@ class DatabaseHandler:
             
             return query.count()
         except Exception as e:
-            logger.error(f"Error counting trades: {e}")
+            redis_publisher.log("error", f"Error counting trades: {e}")
             return 0
         finally:
             session.close()

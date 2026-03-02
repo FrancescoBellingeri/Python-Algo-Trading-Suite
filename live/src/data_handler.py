@@ -1,9 +1,9 @@
 import pandas as pd
 import os
 from ib_insync import Stock, util
-from src.logger import logger
 from config import SYMBOL, EXCHANGE, CURRENCY
 from src.database import DatabaseHandler
+from src.connector import Connector
 from src.redis_publisher import redis_publisher
 import time
 from datetime import datetime, timedelta
@@ -12,15 +12,17 @@ import pytz
 class DataHandler:
     """Handles market data download and update."""
     
-    def __init__(self, ib_connector):
+    def __init__(self, connector, db_handler):
         """
         Initializes DataHandler.
         
         Args:
-            ib_connector: Already connected IBConnector instance
+            connector: Already connected Connector instance
+            db_handler: Shared DatabaseHandler instance
         """
-        self.ib = ib_connector.ib
-        self.db = DatabaseHandler()
+        self.connector = connector
+        self.ib = self.connector.ib
+        self.db = db_handler
         self.symbol = SYMBOL
         self.contract = Stock(SYMBOL, EXCHANGE, CURRENCY)
         
@@ -30,22 +32,12 @@ class DataHandler:
             os.makedirs(self.data_dir)
         
         self.data_file = os.path.join(self.data_dir, f'{SYMBOL}_5min.csv')
-
-        # Send initial info
-        redis_publisher.publish("data-config", {
-            "symbol": SYMBOL,
-            "exchange": EXCHANGE,
-            "currency": CURRENCY,
-            "timeframe": "5min",
-            "data_file": self.data_file
-        })
         
     def download_historical_data(self):
         """
         Downloads last 5 Days of historical data to calculate all indicators.
         """
         try:            
-            logger.info(f"Downloading 5 Days of historical data for {self.symbol}...")
             redis_publisher.log("success", f"Downloading 5 Days of historical data for {self.symbol}...")
 
             bars = self.ib.reqHistoricalData(
@@ -70,17 +62,13 @@ class DataHandler:
                 # Save to DB
                 success = self.db.save_candles(df, self.symbol)
                 if success:
-                    logger.info(f"✅ Downloaded and saved {len(df)} candles to Database.")
                     redis_publisher.log("success", f"✅ Downloaded and saved {len(df)} candles to Database.")
                     
                 return df
             
-            logger.info(f"No data downloaded")
             redis_publisher.log("success", f"No data downloaded")
-
             return pd.DataFrame
         except Exception as e:
-            logger.error(f"Error downloading historical data: {e}")
             redis_publisher.log("error", f"Error downloading historical data: {str(e)}")
             return pd.DataFrame()
     
@@ -91,12 +79,12 @@ class DataHandler:
         """
         try:
             # Load existing data
-            # if not os.path.exists(self.data_file):
-            #     logger.error(f"Data file not found: {self.data_file}")
-            #     logger.info("Run download_historical_data() first")
-            #     return False
+            if not os.path.exists(self.data_file):
+                redis_publisher.log("warning", f"Data file not found: {self.data_file}")
+                redis_publisher.log("warning", "Run download_historical_data() first")
+                return False
             
-            # df = pd.read_csv(self.data_file)
+            df = pd.read_csv(self.data_file)
             # df['date'] = pd.to_datetime(df['date'], utc=True).dt.tz_convert('America/New_York')
             
             # --- STEP 1: Calculate what SHOULD be the last candle ---
@@ -116,33 +104,25 @@ class DataHandler:
             df_last = self.db.get_latest_data(self.symbol, limit=1)
             
             if df_last.empty:
-                logger.warning("DB empty. Performing full download...")
                 redis_publisher.log("warning", "DB empty. Performing full download...")
                 return self.download_historical_data()
             
             # Get last date (NY time)
             last_db_time = df_last['date'].iloc[-1]
 
-            logger.info(f"Last timestamp in dataset: {last_db_time}")
             redis_publisher.log("success", f"Last timestamp in dataset: {last_db_time}")
 
             # --- STEP 3: Comparison ---
             # If the last candle in DB is equal (or later) to expected, we are good.
             if last_db_time >= expected_candle_time:
-                logger.info(f"Data updated. (Last: {last_db_time})")
+                redis_publisher.log("success", f"Data updated. (Last: {last_db_time})")
                 return self.db.get_latest_data(self.symbol, limit=300)
             
             # If we are here, data is MISSING.
             # Calculate the "gap" to decide how much to download
             gap = expected_candle_time - last_db_time
             
-            logger.info(f"Missing candle {expected_candle_time}. Time gap: {gap}")
-            redis_publisher.log("warning", f"⏳ Data gap detected: {gap}")
-            redis_publisher.publish("data-gap", {
-                "gap_duration": str(gap),
-                "missing_from": str(last_db_time),
-                "missing_to": str(expected_candle_time)
-            })
+            redis_publisher.log("warning", f"Missing candle {expected_candle_time}. Time gap: {gap}")
             
              # --- STEP 4: Smart Download Strategy ---
             if gap < timedelta(minutes=10):
@@ -156,12 +136,7 @@ class DataHandler:
                 duration_str = '1 W'
             
             # --- STEP 5: Download from IB ---
-            logger.info(f"Requesting data from IB (Duration: {duration_str})...")
-            redis_publisher.publish("data-update", {
-                "status": "downloading",
-                "duration": duration_str,
-                "retries": max_retries
-            })
+            redis_publisher.log("info", f"Requesting data from IB (Duration: {duration_str})...")
 
             for attempt in range(max_retries):
                 bars = self.ib.reqHistoricalData(
@@ -185,40 +160,20 @@ class DataHandler:
                     if not new_candles.empty:
                         self.db.save_candles(new_candles, self.symbol)
 
-                        logger.info(f"✅ Added {len(new_candles)} new candles.")
-                        redis_publisher.log("success", f"✅ Added {len(new_candles)} new candles")
-                        
-                        # Send update info
-                        redis_publisher.publish("data-update", {
-                            "status": "updated",
-                            "new_candles": len(new_candles),
-                            "latest_time": str(new_candles['date'].max())
-                        })
+                        redis_publisher.log("success", f"✅ Added {len(new_candles)} new candles.")
                         
                         # 5. Return last 300 candles from DB to bot (for indicator calculation)
                         return self.db.get_latest_data(self.symbol, limit=300)
 
                 # Retry
                 if attempt < max_retries - 1:
-                    logger.warning(f"Candle not yet available, retry {attempt+1}/{max_retries} in {retry_delay}s...")
-                    redis_publisher.log("warning", f"⏳ Retry {attempt+1}/{max_retries} in {retry_delay}s...")
+                    redis_publisher.log("warning", f"Candle not yet available, retry {attempt+1}/{max_retries} in {retry_delay}s...")
                     time.sleep(retry_delay)
 
             # Fallback: if expected candle not found after all retries
-            logger.warning(f"⚠️ Candle {expected_candle_time} not found after {max_retries} attempts")
+            redis_publisher.log("warning", f"⚠️ Candle {expected_candle_time} not found after {max_retries} attempts")
             redis_publisher.log("warning", f"⚠️ Candle not available after {max_retries} attempts")
-            redis_publisher.publish("data-update", {
-                "status": "failed",
-                "expected_candle": str(expected_candle_time),
-                "attempts": max_retries
-            })
             return pd.DataFrame()
         except Exception as e:
-            logger.error(f"Error updating data: {e}")
             redis_publisher.log("error", f"Error updating data: {str(e)}")
-            redis_publisher.publish("data-update", {
-                "status": "error",
-                "error": str(e),
-                "symbol": self.symbol
-            })
             return pd.DataFrame()

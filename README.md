@@ -78,12 +78,12 @@ This is the core of the engine. Position sizing is not fixed but strictly mathem
 
 The project is built with a focus on modularity, scalability, and real-time data analysis.
 
-### Core Trading Engine
+### Core Trading Engine (Hybrid IBKR + Alpaca)
 
 - **Data Processing:** `Pandas`, `NumPy` (Vectorized operations for speed).
 - **Analysis:** `Pandas-TA` (Technical Analysis library), `QuantStats` (Financial metrics).
-- **Visualization:** `Matplotlib`, `Seaborn`.
-- **Live Execution:** `ib_insync` (Asynchronous wrapper for Interactive Brokers TWS API).
+- **Live Data (IBKR):** `ib_insync` (Historical data fetch and fast live data streaming).
+- **Order Execution (Alpaca):** `alpaca-py` (Simplified position management and order execution).
 - **Logging:** `loguru` (Structured logging with rotation).
 
 ### Backend API (`/backend`)
@@ -120,15 +120,19 @@ The repository is structured to enforce a clean separation between **Data Engine
 │   ├── check.py                # Data integrity & sanity checks (Timezone, Missing values)
 │   └── QQQ_5min.csv            # Processed dataset
 │
-├── live/                       # Production Trading Environment
+├── live/                       # Production Trading Environment (Hybrid IBKR + Alpaca)
 │   ├── src/                    # Live execution logic & order management system
-│   │   ├── bot.py              # Main trading bot orchestrator
-│   │   ├── execution_handler.py # Order execution and position management
+│   │   ├── connector.py        # Connection manager for both IBKR and Alpaca
+│   │   ├── data_handler.py     # Live data fetching via IBKR
+│   │   ├── execution_handler.py # Order management via Alpaca Trading API
+│   │   ├── indicator_calculator.py # Real-time technical indicators (SMA, ATR, WillR)
 │   │   ├── redis_publisher.py  # Real-time event publishing to Redis
-│   │   └── database_handler.py # Trade persistence to PostgreSQL
+│   │   └── database.py         # Trade persistence to PostgreSQL
 │   ├── config.py               # Strategy parameters (RISK_PCT, LEVERAGE, SYMBOLS)
-│   ├── .env.test               # Example .env configuration to start live trading
-│   ├── requirements.txt        # Project dependencies for live trading
+│   ├── main.py                 # Main trading bot orchestrator
+│   ├── .env.test               # Example .env configuration including Alpaca Keys
+│   ├── requirements.txt        # Project dependencies for live trading (hybrid)
+│   ├── Dockerfile              # Containerization for deployment
 │   └── logs/                   # Execution logs for audit trails
 │
 ├── backend/                    # FastAPI Backend (REST + WebSocket)
@@ -139,7 +143,7 @@ The repository is structured to enforce a clean separation between **Data Engine
 │   │   ├── routers/            # API endpoints (trades, positions, accounts)
 │   │   └── services/           # Business logic layer (Redis consumer, WebSocket manager)
 │   ├── requirements.txt        # Backend dependencies (FastAPI, SQLAlchemy, Redis, etc.)
-│   └── .env                    # Backend environment variables (DB credentials, Redis URL)
+│   └── .env                    # Backend environment variables
 │
 ├── dashboard/                  # Vue 3 Real-time Dashboard
 │   ├── src/
@@ -164,11 +168,12 @@ The repository is structured to enforce a clean separation between **Data Engine
 
 ### Prerequisites
 
-1. **Interactive Brokers Account** with TWS (Trader Workstation) or IB Gateway installed.
-2. **Python 3.13+** installed on your system.
-3. **Node.js 20+** for the dashboard.
-4. **PostgreSQL** database running locally or remotely.
-5. **Redis** server running (for real-time communication).
+1. **Interactive Brokers Account** with TWS (Trader Workstation) or IB Gateway installed (for data streaming).
+2. **Alpaca Account** with API Key and Secret Key (for order execution).
+3. **Python 3.13+** installed on your system.
+4. **Node.js 20+** for the dashboard.
+5. **PostgreSQL** database running locally or remotely.
+6. **Redis** server running (for real-time communication).
 
 ### Configuration
 
@@ -179,10 +184,15 @@ Before running the project, you need to configure the environment variables:
 Create a `.env` file in the `live/` directory (use `.env.test` as a template):
 
 ```bash
-# Interactive Brokers Connection
+# Interactive Brokers Connection (DATA ONLY)
 IB_HOST=127.0.0.1
 IB_PORT=7497  # 7497 for paper trading, 7496 for live
 IB_CLIENT_ID=1
+
+# Alpaca Connection (TRADING ONLY)
+ALPACA_API_KEY=your_alpaca_key
+ALPACA_SECRET_KEY=your_alpaca_secret
+ALPACA_PAPER=true  # Set to true for paper trading
 
 # Database
 DATABASE_URL=postgresql://user:password@localhost:5432/trading_db

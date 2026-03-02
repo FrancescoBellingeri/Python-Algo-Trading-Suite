@@ -1,6 +1,7 @@
 import pandas as pd
 import pandas_ta as ta
 import os
+from src.logger import logger
 from src.database import DatabaseHandler
 from src.redis_publisher import redis_publisher
 from config import SYMBOL
@@ -8,9 +9,9 @@ from config import SYMBOL
 class IndicatorCalculator:
     """Calculates technical indicators for trading strategy."""
     
-    def __init__(self, db_handler):
+    def __init__(self):
         """Initializes indicator calculator."""
-        self.db = db_handler
+        self.db = DatabaseHandler()
         self.symbol = SYMBOL
 
         # Indicator parameters
@@ -60,8 +61,15 @@ class IndicatorCalculator:
             
             # Verify enough data
             if len(df) < self.min_candles_required:
+                logger.warning(f"Insufficient data to calculate all indicators. "
+                             f"Required: {self.min_candles_required}, Available: {len(df)}")
                 redis_publisher.log("warning", f"⚠️ Insufficient data: {len(df)}/{self.min_candles_required} candles")
-                
+                redis_publisher.publish("indicators-warning", {
+                    "type": "insufficient_data",
+                    "required": self.min_candles_required,
+                    "available": len(df)
+                })
+            
             # Calculate ATR (Average True Range)
             df['ATR_14'] = ta.atr(df['high'], df['low'], df['close'], length=self.params['ATR_LENGTH'])
             
@@ -76,7 +84,12 @@ class IndicatorCalculator:
             return df
             
         except Exception as e:
+            logger.error(f"Error calculating indicators: {e}")
             redis_publisher.log("error", f"Indicator calculation error: {str(e)}")
+            redis_publisher.publish("indicators-calculation", {
+                "status": "error",
+                "error": str(e)
+            })
             return df
         
     def calculate_incremental(self, df):
@@ -99,7 +112,7 @@ class IndicatorCalculator:
             
             if not has_indicators or len(df) < 200:
                 # First time or insufficient data, calculate all
-                redis_publisher.log("info", "Full indicator calculation...")
+                logger.info("Full indicator calculation...")
                 return self.calculate_all(df)
             
             # Calculate only for last 5 rows
@@ -121,10 +134,10 @@ class IndicatorCalculator:
             df.loc[df.index[last_5_start:], 'SMA_200'] = subset.iloc[-5:]['SMA_200'].values
             df.loc[df.index[last_5_start:], 'WILLR_10'] = subset.iloc[-5:]['WILLR_10'].values
             
-            redis_publisher.log("info", f"Updated indicators for last {min(5, len(df))} rows")
+            logger.info(f"Updated indicators for last {min(5, len(df))} rows")
             df.to_csv(self.data_file, index=False)
             return df
             
         except Exception as e:
-            redis_publisher.log("error", f"Error in incremental calculation: {e}")
+            logger.error(f"Error in incremental calculation: {e}")
             return self.calculate_all(df)
