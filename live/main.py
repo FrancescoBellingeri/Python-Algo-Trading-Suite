@@ -340,6 +340,14 @@ class TradingBot:
 
                     # B) 5 Minute Candles (9:35 -> 16:00, every 5 min)
                     elif (time(9, 35) <= now.time() <= time(16, 00)):
+                        if now.minute % 5 == 4 and now.second == 53:
+                            try:
+                                # A very light call to open the TLS tunnel
+                                self.execution.trading_client.get_clock()
+                                redis_publisher.log("debug", "🔥 Alpaca connection warmed up")
+                            except Exception as e:
+                                pass
+                                
                         # Check 5 minute modulo (0, 5, 10, ...)
                         if now.minute % 5 == 0:
                             self.on_new_candle()
