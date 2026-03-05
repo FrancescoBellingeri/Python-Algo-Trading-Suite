@@ -69,7 +69,7 @@ services:
     networks:
       - trading-network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -88,7 +88,7 @@ services:
     environment:
       REDIS_HOST: trading-redis
       REDIS_PORT: 6379
-      ALLOWED_ORIGINS: http://localhost:5173,https://python-algo-trading-suite.vercel.app,https://livealpaca.duckdns.org
+      ALLOWED_ORIGINS: http://localhost:5173,https://python-algo-trading-suite.vercel.app,https://alpacatrading-api.francescobellingeri.com,https://algotradingsuite.francescobellingeri.com
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
@@ -115,17 +115,7 @@ services:
       - ./data/letsencrypt:/etc/letsencrypt
     networks:
       - trading-network
-  duckdns:
-    image: lscr.io/linuxserver/duckdns:latest
-    container_name: duckdns
-    environment:
-      - SUBDOMAINS=livealpaca
-      - TOKEN=9e5aa0d4-1485-4ebe-b55c-53b3d975fb0a
-      - LOG_FILE=false
-    restart: unless-stopped
-    networks:
-      - trading-network
 
 networks:
   trading-network:
-    driver: bridge
+    external: true
