@@ -67,12 +67,13 @@
           <p class="text-2xl font-bold text-white mt-1">${{ formatMoney(accountInfo.net_liquidation) }}</p>
         </div>
 
-        <!-- 2. Daily PnL (WS) -->
+        <!-- 2. Max Drawdown (API Stats) -->
         <div class="bg-[#131722] border border-[#2A3350] rounded-lg p-4">
-          <p class="text-gray-400 text-xs uppercase font-semibold">Daily P&L</p>
-          <p :class="['text-2xl font-bold mt-1', getPnlColor(accountInfo.daily_pnl)]">
-            ${{ formatMoney(accountInfo.daily_pnl) }}
+          <p class="text-gray-400 text-xs uppercase font-semibold">Max Drawdown</p>
+          <p class="text-2xl font-bold mt-1 text-red-400">
+            -${{ formatMoney(stats.max_drawdown_dollar) }}
           </p>
+          <p class="text-xs text-gray-500">-{{ stats.max_drawdown_percent }}% peak-to-trough</p>
         </div>
 
         <!-- 3. Win Rate (API Stats) -->
@@ -245,6 +246,8 @@
     total_trades: 0,
     win_rate_percent: 0,
     total_pnl_dollar: 0,
+    max_drawdown_dollar: 0,
+    max_drawdown_percent: 0,
   })
 
   const logsContainer = ref(null)
