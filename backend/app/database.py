@@ -210,17 +210,28 @@ class DatabaseHandler:
             avg_loss = (sum(t.pnl_dollar for t in losers) / len(losers)) if losers else 0
             
             # Drawdown calculation
+            # Dollar DD: peak-to-trough of cumulative realized PnL.
+            # Percent DD: peak-to-trough of a compounded equity curve rebuilt
+            # from per-trade returns (pnl_percent = pnl / account_equity * 100),
+            # so it's relative to equity at each point, not to the tiny early
+            # PnL peak (which produced nonsense like -10000%).
             cumulative = 0
             peak = 0
             max_dd = 0
+
+            equity = 1.0
+            equity_peak = 1.0
             max_dd_pct = 0
-            
+
             for t in sorted(trades, key=lambda x: x.exit_time):
                 cumulative += t.pnl_dollar
                 peak = max(peak, cumulative)
-                dd = peak - cumulative
-                max_dd = max(max_dd, dd)
-                if peak > 0: max_dd_pct = max(max_dd_pct, (dd/peak)*100)
+                max_dd = max(max_dd, peak - cumulative)
+
+                equity *= (1 + (t.pnl_percent or 0) / 100)
+                equity_peak = max(equity_peak, equity)
+                if equity_peak > 0:
+                    max_dd_pct = max(max_dd_pct, (equity_peak - equity) / equity_peak * 100)
             
             return {
                 'total_trades': total_trades,
