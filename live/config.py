@@ -6,7 +6,11 @@ load_dotenv()
 
 # === IB CONNECTION ===
 IB_HOST = os.getenv('IB_HOST', 'ib-gateway')
-IB_PORT = int(os.getenv('IB_PORT', '4004'))  # 7497 for TWS, 4001 for IB Gateway
+IB_PORT = int(os.getenv('IB_PORT', '4004'))
+# 4004 is the default because docker-compose reaches the gnzsnz/ib-gateway
+# container through its socat relay (4003 live / 4004 paper). A gateway
+# running natively on the host listens on 4001 live / 4002 paper instead,
+# and TWS on 7496 live / 7497 paper.
 IB_CLIENT_ID = int(os.getenv('IB_CLIENT_ID', '1'))
 
 # === ALPACA CONNECTION ===

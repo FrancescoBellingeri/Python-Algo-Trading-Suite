@@ -48,9 +48,14 @@ async def get_trade_history(
 async def get_trade_stats(symbol: Optional[str] = None):
     """Aggregate statistics from the DB"""
     try:
-        return db_handler.calculate_stats(symbol=symbol)
+        stats = db_handler.calculate_stats(symbol=symbol)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"DB Error: {str(e)}")
+    # calculate_stats swallows its own errors and returns None, which would
+    # otherwise reach the dashboard as a 200 with a null body.
+    if stats is None:
+        raise HTTPException(status_code=500, detail="DB Error: could not calculate stats")
+    return stats
 
 # --- COMMANDS ---
 @router.post("/command")

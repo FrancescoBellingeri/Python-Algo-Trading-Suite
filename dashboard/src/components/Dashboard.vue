@@ -70,10 +70,18 @@
         <!-- 2. Max Drawdown (API Stats) -->
         <div class="bg-[#131722] border border-[#2A3350] rounded-lg p-4">
           <p class="text-gray-400 text-xs uppercase font-semibold">Max Drawdown</p>
-          <p class="text-2xl font-bold mt-1 text-red-400">
-            -${{ formatMoney(stats.max_drawdown_dollar) }}
+          <p :class="['text-2xl font-bold mt-1', stats.max_drawdown_dollar ? 'text-red-400' : 'text-gray-400']">
+            {{ stats.max_drawdown_dollar ? '-' : '' }}${{ formatMoney(stats.max_drawdown_dollar) }}
           </p>
-          <p class="text-xs text-gray-500">-{{ stats.max_drawdown_percent }}% peak-to-trough</p>
+          <!-- Depth and percent come off the same slide, so naming the peak they
+               fell from makes the pair checkable at a glance. -->
+          <p v-if="stats.max_drawdown_peak_equity" class="text-xs text-gray-500">
+            -{{ formatMoney(stats.max_drawdown_percent) }}% from peak ${{ formatMoney(stats.max_drawdown_peak_equity) }}
+          </p>
+          <p v-else-if="stats.max_drawdown_dollar" class="text-xs text-amber-500/70">
+            peak-to-trough &middot; set STARTING_EQUITY for %
+          </p>
+          <p v-else class="text-xs text-gray-500">no drawdown yet</p>
         </div>
 
         <!-- 3. Win Rate (API Stats) -->
@@ -248,6 +256,8 @@
     total_pnl_dollar: 0,
     max_drawdown_dollar: 0,
     max_drawdown_percent: 0,
+    max_drawdown_peak_equity: null,
+    starting_equity: null,
   })
 
   const logsContainer = ref(null)
@@ -268,7 +278,12 @@
   const fetchStats = async () => {
     try {
       const res = await fetch(`${API_URL}/api/stats`)
-      stats.value = await res.json()
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const json = await res.json()
+      // Keep the last good values if the endpoint answers with nothing usable,
+      // rather than assigning null and blanking every KPI card.
+      if (json && typeof json === 'object') stats.value = json
+      else console.error("Stats endpoint returned no data")
     } catch (e) {
       console.error("Failed to fetch stats", e)
     }
