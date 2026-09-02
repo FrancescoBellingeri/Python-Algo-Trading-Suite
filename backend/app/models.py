@@ -91,6 +91,11 @@ class TradeStats(BaseModel):
     avg_loss_dollar: float
     max_drawdown_dollar: float
     max_drawdown_percent: float
+    # Context for the drawdown above: the equity the history started from and
+    # the peak the reported slide fell from. None when the starting equity
+    # could not be resolved, in which case max_drawdown_percent is 0.
+    starting_equity: Optional[float] = None
+    max_drawdown_peak_equity: Optional[float] = None
 
 # ====================
 # WebSocket Wrapper

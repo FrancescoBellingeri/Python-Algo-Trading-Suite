@@ -1,6 +1,7 @@
 import os
 import pandas as pd
 import logging
+from datetime import datetime, timezone
 from sqlalchemy import create_engine, Column, String, Float, Integer
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy.dialects.postgresql import TIMESTAMP
@@ -48,6 +49,93 @@ class Trade(Base):
     pnl_dollar = Column(Float, nullable=False)
     pnl_percent = Column(Float, nullable=False)
     exit_reason = Column(String(20), nullable=False)
+
+# ====================
+# DRAWDOWN
+# ====================
+
+_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+
+def chronological(trades):
+    """Oldest first. Rows with no exit_time sort last, ties broken by insert id."""
+    return sorted(trades, key=lambda t: (t.exit_time is None, t.exit_time or _EPOCH, t.id or 0))
+
+
+def resolve_starting_equity(sorted_trades):
+    """Recover the account equity the trade history started from.
+
+    Every row stores pnl_percent = pnl_dollar / account_equity * 100, where
+    account_equity is the snapshot the bot takes once when a session starts
+    (live/src/execution_handler.py). Inverting that on a trade gives back the
+    equity it was measured against; rolling off the PnL booked before it gives
+    the equity at the beginning of the history.
+
+    Set STARTING_EQUITY in the environment to skip the derivation.
+    """
+    override = os.getenv("STARTING_EQUITY")
+    if override:
+        try:
+            value = float(override)
+            if value > 0:
+                return value
+            logger.warning(f"STARTING_EQUITY must be positive, ignoring {override!r}")
+        except ValueError:
+            logger.warning(f"STARTING_EQUITY is not a number, ignoring {override!r}")
+
+    pnl_before = 0.0
+    for t in sorted_trades:
+        pnl = t.pnl_dollar or 0.0
+        pct = t.pnl_percent or 0.0
+        # pct is 0 when the bot had no equity snapshot at the time: not invertible
+        if pnl and pct:
+            starting = pnl / (pct / 100) - pnl_before
+            if starting > 0:
+                return starting
+        pnl_before += pnl
+    return None
+
+
+def compute_drawdown(sorted_trades, starting_equity):
+    """Deepest peak-to-trough slide of the realized equity curve.
+
+    equity(i) = starting_equity + cumulative realized PnL up to trade i.
+
+    Both figures come off that single curve and describe the SAME slide, so the
+    dashboard can put them on one line without them contradicting each other.
+    The episode reported is the deepest one in percent (the textbook max
+    drawdown) and the dollar figure is that same episode's depth.
+
+    Percent needs the starting equity: measured against the cumulative-PnL peak
+    instead, an early $600 peak followed by a $9,500 slide reads as a "250%
+    drawdown". When the equity cannot be resolved the percent is reported as 0.0
+    rather than fabricated.
+
+    Returns (max_dd_dollar, max_dd_percent, peak_equity).
+    """
+    cumulative = 0.0
+    peak_cumulative = 0.0
+    max_dd_dollar = 0.0
+    max_dd_percent = 0.0
+    peak_equity = starting_equity
+
+    for t in sorted_trades:
+        cumulative += t.pnl_dollar or 0.0
+        peak_cumulative = max(peak_cumulative, cumulative)
+        # equity - peak_equity == cumulative - peak_cumulative, so the depth in
+        # dollars is the same whether or not the starting equity is known.
+        depth = peak_cumulative - cumulative
+
+        if starting_equity:
+            episode_peak = starting_equity + peak_cumulative
+            percent = (depth / episode_peak * 100) if episode_peak > 0 else 0.0
+            if percent > max_dd_percent:
+                max_dd_percent, max_dd_dollar, peak_equity = percent, depth, episode_peak
+        elif depth > max_dd_dollar:
+            max_dd_dollar = depth
+
+    return max_dd_dollar, max_dd_percent, peak_equity
+
 
 # ====================
 # DATABASE HANDLER
@@ -197,41 +285,30 @@ class DatabaseHandler:
                 return {
                     'total_trades': 0, 'win_rate_percent': 0.0, 'total_pnl_dollar': 0.0,
                     'avg_win_dollar': 0.0, 'avg_loss_dollar': 0.0,
-                    'max_drawdown_dollar': 0.0, 'max_drawdown_percent': 0.0
+                    'max_drawdown_dollar': 0.0, 'max_drawdown_percent': 0.0,
+                    'starting_equity': None, 'max_drawdown_peak_equity': None
                 }
             
             total_trades = len(trades)
-            winners = [t for t in trades if t.pnl_dollar > 0]
-            losers = [t for t in trades if t.pnl_dollar <= 0]
+            winners = [t for t in trades if (t.pnl_dollar or 0) > 0]
+            losers = [t for t in trades if (t.pnl_dollar or 0) <= 0]
             
-            total_pnl = sum(t.pnl_dollar for t in trades)
+            total_pnl = sum(t.pnl_dollar or 0 for t in trades)
             win_rate = (len(winners) / total_trades * 100)
-            avg_win = (sum(t.pnl_dollar for t in winners) / len(winners)) if winners else 0
-            avg_loss = (sum(t.pnl_dollar for t in losers) / len(losers)) if losers else 0
+            avg_win = (sum(t.pnl_dollar or 0 for t in winners) / len(winners)) if winners else 0
+            avg_loss = (sum(t.pnl_dollar or 0 for t in losers) / len(losers)) if losers else 0
             
-            # Drawdown calculation
-            # Dollar DD: peak-to-trough of cumulative realized PnL.
-            # Percent DD: peak-to-trough of a compounded equity curve rebuilt
-            # from per-trade returns (pnl_percent = pnl / account_equity * 100),
-            # so it's relative to equity at each point, not to the tiny early
-            # PnL peak (which produced nonsense like -10000%).
-            cumulative = 0
-            peak = 0
-            max_dd = 0
-
-            equity = 1.0
-            equity_peak = 1.0
-            max_dd_pct = 0
-
-            for t in sorted(trades, key=lambda x: x.exit_time):
-                cumulative += t.pnl_dollar
-                peak = max(peak, cumulative)
-                max_dd = max(max_dd, peak - cumulative)
-
-                equity *= (1 + (t.pnl_percent or 0) / 100)
-                equity_peak = max(equity_peak, equity)
-                if equity_peak > 0:
-                    max_dd_pct = max(max_dd_pct, (equity_peak - equity) / equity_peak * 100)
+            # Drawdown: one equity curve, so the dollar and percent figures
+            # describe the same slide. See compute_drawdown() above.
+            ordered = chronological(trades)
+            starting_equity = resolve_starting_equity(ordered)
+            if starting_equity is None:
+                logger.warning(
+                    "Could not resolve starting equity (no trade has a usable "
+                    "pnl_percent); max_drawdown_percent reported as 0. "
+                    "Set STARTING_EQUITY to fix."
+                )
+            max_dd, max_dd_pct, peak_equity = compute_drawdown(ordered, starting_equity)
             
             return {
                 'total_trades': total_trades,
@@ -240,7 +317,9 @@ class DatabaseHandler:
                 'avg_win_dollar': round(avg_win, 2),
                 'avg_loss_dollar': round(avg_loss, 2),
                 'max_drawdown_dollar': round(max_dd, 2),
-                'max_drawdown_percent': round(max_dd_pct, 2)
+                'max_drawdown_percent': round(max_dd_pct, 2),
+                'starting_equity': round(starting_equity, 2) if starting_equity else None,
+                'max_drawdown_peak_equity': round(peak_equity, 2) if peak_equity else None
             }
         except Exception as e:
             logger.error(f"Error calculating stats: {e}")
